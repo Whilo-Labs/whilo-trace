@@ -1,0 +1,43 @@
+name: Bug report
+description: Something does not work or looks wrong
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Linux and macOS builds are new and not tested on real machines yet, so reports from those systems help a lot.
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - macOS
+    validations:
+      required: true
+  - type: input
+    id: system-version
+    attributes:
+      label: System version or distribution
+      placeholder: "Ubuntu 24.04, macOS 15.2, Windows 11 24H2"
+  - type: input
+    id: version
+    attributes:
+      label: Whilo Trace version and file
+      placeholder: "0.1.0, AppImage"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Screenshots or messages
+      description: A screenshot of the window, an error text, or the output of the command line tool.
