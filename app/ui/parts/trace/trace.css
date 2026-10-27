@@ -1,0 +1,240 @@
+/* Whilo Trace, part "target trace".
+   Variables from base/tokens.css only, no colours of its own.
+   Flat: layers differ by fill, no borders, shadows or gradients. */
+
+/* ---------- screen ---------- */
+.screen { container: screen / inline-size; background: var(--bg); color: var(--text); }
+.card { background: var(--layer); border-radius: var(--radius-card); }
+.tr-main { display: grid; gap: 16px; padding: 16px 24px 24px; }
+
+/* header */
+.tr-head {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+  min-height: 56px; padding: 11px 24px; background: var(--layer);
+}
+.tr-back { padding: 0 12px 0 8px; gap: 6px; }
+.tr-ident { display: flex; align-items: center; gap: 10px; flex: 1 1 220px; min-width: 0; }
+/* A long name: the line under it gives way first (flex-shrink far above the name's), then the name ends in an
+   ellipsis (full name in its title). The probe switch and the chips keep their size. */
+.tr-ident h1 { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 20px; line-height: 1.2; white-space: nowrap; }
+.tr-ident h1.num { font-weight: 650; }
+.tr-ident .sub { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted); }
+.tr-ident .chip, .tr-ident .seg { flex: none; }
+.chip-pause { background: var(--selected); }
+.tr-set { display: flex; align-items: center; gap: 16px; }
+.tr-act { display: flex; align-items: center; gap: 8px; }
+/* report without trace data: the main button stays in place, inactive */
+.tr-act .btn[disabled], .tr-act .btn[disabled]:hover { background: var(--layer); color: var(--faint); filter: none; cursor: default; }
+.tr-field { position: relative; display: flex; align-items: center; gap: 8px; }
+.tr-field .lbl { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.tr-dd { gap: 6px; padding: 0 10px 0 12px; min-width: 76px; justify-content: space-between; }
+.tr-dd svg { color: var(--muted); }
+.ico { display: block; flex: none; }
+
+/* interval drop-down */
+.tr-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; min-width: 200px;
+  display: grid; gap: 2px; padding: 4px; border-radius: var(--radius-ctl); background: var(--control);
+}
+.tr-menu button {
+  display: grid; grid-template-columns: auto 1fr 14px; align-items: center; gap: 10px; white-space: nowrap;
+  height: 30px; padding: 0 8px 0 10px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--title); font: inherit; font-size: 13px; cursor: pointer; text-align: left;
+}
+.tr-menu button:hover, .tr-menu button[aria-checked="true"] { background: var(--control-hover); }
+.tr-menu .def { font-size: 12px; color: var(--text); }
+
+@container screen (max-width: 1259px) {
+  .tr-set { order: 3; flex-basis: 100%; }
+}
+
+/* findings */
+.tr-concl { padding: 14px 16px 15px; }
+.tr-lead { position: relative; margin: 0; padding-left: 20px; font-size: 16px; line-height: 1.4; color: var(--title); }
+.tr-lead strong { font-weight: 600; }
+.tr-lead .rest { color: var(--text); font-size: 14px; }
+.tr-concl ul { display: grid; gap: 3px; margin: 6px 0 0; padding: 0; list-style: none; }
+.tr-concl li { position: relative; padding-left: 20px; font-size: 14px; line-height: 1.45; color: var(--text); }
+.tr-lead > .mk, .tr-concl li > .mk { position: absolute; left: 0; top: 0.42em; }
+.tr-concl .ip { font-family: "Cascadia Mono", ui-monospace, Consolas, monospace; font-size: 13px; color: var(--title); }
+.hl-btn {
+  margin: 0 -2px; padding: 0 2px; border: 0; border-radius: 4px; background: none;
+  color: var(--title); font: inherit; cursor: pointer;
+  text-decoration: underline; text-decoration-color: var(--muted); text-underline-offset: 3px;
+}
+.hl-btn:hover { background: var(--control); text-decoration-color: var(--title); }
+/* neutral line under the findings: no data from the core, a failed action, the row's error */
+.tr-note { margin: 6px 0 0; padding-left: 20px; font-size: 13px; line-height: 1.45; color: var(--text); }
+
+/* status marks (a chart in miniature: red only for loss) */
+.mk { display: inline-block; width: 10px; height: 10px; border-radius: 2px; flex: none; vertical-align: -1px; }
+.mk-ok { background: var(--ok); }
+.mk-loss { background: var(--loss); }
+.mk-partial { background: var(--partial); }
+.mk-noreply { background: var(--muted); }
+.mk-bg { fill: var(--well); }
+svg.mk { overflow: hidden; }
+.hatch-fill { fill: var(--silent); }
+
+/* hop table */
+/* --loss-w: the Loss column. With a node that answers only some probes it is wider:
+   next to the loss, in grey, the share of probes without reply («0 %  61 % без ответа»), as in the summary. */
+.tr-tbl {
+  --row-h: 40px; --gap: 10px; --loss-w: 64px;
+  --cols: 28px minmax(118px, 150px) minmax(72px, 1fr) var(--loss-w) 40px 48px 48px 48px 48px 56px minmax(104px, 1.7fr) minmax(188px, 236px) 32px;
+  display: grid; row-gap: 2px; padding: 6px 8px 8px;
+}
+.tr-tbl.has-nr { --loss-w: 148px; }
+.tr-hd, .tr-row { display: grid; grid-template-columns: var(--cols); column-gap: var(--gap); align-items: center; padding: 0 8px; }
+/* Width about 1100: columns at their measured minimum (longest status 158 px, address 115, name 96).
+   No room for the no-reply share here: it stays in the status hint and in the findings. */
+@container screen (max-width: 1199px) {
+  .tr-tbl, .tr-tbl.has-nr {
+    --gap: 8px; --loss-w: 56px;
+    --cols: 28px 118px minmax(100px, 1fr) var(--loss-w) 40px 44px 44px 44px 44px 52px minmax(100px, 1.7fr) minmax(180px, 220px) 32px;
+  }
+  .tr-tbl .c-loss .nr { display: none; }
+}
+.tr-hd { grid-template-rows: 16px 22px; padding-bottom: 2px; font-size: 12px; color: var(--muted); }
+.tr-hd > div { grid-row: 2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tr-hd > .g { grid-row: 1; font-size: 11px; color: var(--muted); text-align: center; overflow: visible; }
+.tr-hd > .g.scale { display: flex; justify-content: space-between; text-align: left; }
+.tr-row {
+  height: var(--row-h); border-radius: var(--radius-ctl);
+  font-size: 13px; color: var(--text); cursor: pointer; outline: none;
+}
+.tr-row > div { min-width: 0; white-space: nowrap; }
+.tr-row > .c-addr, .tr-row > .c-name { overflow: hidden; text-overflow: ellipsis; }
+.tr-row:hover, .tr-row.is-hover { background: var(--control); }
+.tr-row[aria-selected="true"] { background: var(--selected); }
+.tr-row:focus-visible, .tr-row.is-focus { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.r { text-align: right; }
+.c-ttl { color: var(--text); }
+.c-addr { color: var(--title); }
+.c-addr .unk { color: var(--text); }
+.v { color: var(--title); }
+.c-loss .mk { margin-right: 6px; vertical-align: 0; width: 8px; height: 8px; }
+.c-loss.has { color: var(--title); font-weight: 600; }
+/* Loss: the number right-aligned in its own width, the grey no-reply share to its right (nodes with partial replies only) */
+.tr-row .c-loss, .tr-hd .c-loss { display: flex; align-items: baseline; gap: 6px; overflow: hidden; }
+.c-loss .lv, .c-loss .lh { flex: none; width: 52px; text-align: right; }
+.c-loss .lh { display: inline-block; }
+.c-loss .nr { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 12px; font-weight: 400; color: var(--text); }
+
+/* latency band: shared scale, min..max filled, a tick for the average */
+.band { position: relative; height: 16px; }
+.trk { position: absolute; left: 0; right: 0; top: 4px; height: 8px; border-radius: 4px; background: var(--well); overflow: hidden; }
+.trk i, .band > i { position: absolute; display: block; }
+.trk .z-warn { top: 0; bottom: 0; background: var(--zone-warn); }
+.trk .z-bad { top: 0; bottom: 0; background: var(--zone-bad); }
+.trk .rng { top: 0; bottom: 0; min-width: 3px; border-radius: 4px; background: var(--range); }
+.band > .avg { top: 1px; width: 2px; height: 14px; margin-left: -1px; border-radius: 1px; background: var(--title); }
+.band svg { position: absolute; left: 0; top: 4px; width: 100%; height: 8px; }
+
+/* status and hint */
+.st { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; border-radius: 4px; cursor: help; }
+.st .tx { overflow: hidden; text-overflow: ellipsis; text-decoration: underline dotted; text-decoration-color: var(--muted); text-underline-offset: 4px; }
+.st.origin .tx { color: var(--title); font-weight: 600; }
+.st:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* pin to main screen button */
+.pin {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--radius-ctl);
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.tr-row:hover .pin, .tr-row.is-hover .pin, .tr-row[aria-selected="true"] .pin { color: var(--title); }
+.pin:hover, .pin.is-hover { background: var(--control-hover); color: var(--title); }
+.pin[aria-pressed="true"] { background: var(--control); color: var(--title); }
+.tr-row:hover .pin[aria-pressed="true"], .tr-row.is-hover .pin[aria-pressed="true"] { background: var(--control-hover); }
+
+/* hint: inverted fill, no shadow or border */
+.tr-tip {
+  position: fixed; z-index: 100; max-width: 320px; padding: 8px 10px; border-radius: var(--radius-ctl);
+  background: var(--title); color: var(--layer); font-size: 12px; line-height: 1.45; pointer-events: none;
+}
+.tr-tip[hidden] { display: none; }
+.tr-tip .tt { display: block; font-weight: 600; }
+
+/* timeline of the selected hop */
+.tr-tl { padding: 12px 16px 10px; }
+.tl-head { display: flex; align-items: center; gap: 8px 14px; min-height: 34px; flex-wrap: wrap; }
+.tl-head h2 { white-space: nowrap; }
+.tl-head .addr { font-size: 13px; color: var(--title); white-space: nowrap; }
+.tl-head .nm { font-size: 13px; color: var(--text); white-space: nowrap; }
+.tl-head .sp { flex: 1 1 0; }
+.tl-head .when { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.tl-head .st { font-size: 13px; color: var(--text); }
+.tl-body { display: grid; grid-template-columns: 52px minmax(0, 1fr); column-gap: 8px; row-gap: 4px; margin-top: 8px; }
+.tl-body > .tl-jit { margin-bottom: 10px; }
+.tl-gl { position: relative; font-size: 12px; color: var(--muted); text-align: right; white-space: nowrap; }
+.tl-gl span { position: absolute; right: 0; transform: translateY(-50%); }
+.tl-gl.mid span { top: 50%; }
+.tl-well { position: relative; background: var(--well); border-radius: 6px; overflow: hidden; }
+.tl-jit { height: 16px; }
+.tl-chart { height: 120px; }
+.tl-dest { height: 44px; }
+.tl-svg { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+.tl-svg path { vector-effect: non-scaling-stroke; }
+.p-line { fill: none; stroke: var(--line); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.p-jit { fill: none; stroke: var(--jitter); stroke-width: 1.5; stroke-linejoin: round; }
+.p-loss { fill: var(--loss); shape-rendering: crispEdges; }
+.p-part { fill: var(--partial); shape-rendering: crispEdges; }
+.p-hatch { fill: none; stroke: var(--silent); stroke-width: 1; }
+.p-grid { fill: none; stroke: var(--grid); stroke-width: 1; }
+.p-warn { fill: var(--zone-warn); }
+.p-bad { fill: var(--zone-bad); }
+.tl-note { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 0 24px; }
+.tl-note span { max-width: 760px; padding: 6px 12px; border-radius: 6px; background: var(--layer); color: var(--text); font-size: 13px; text-align: center; }
+.tl-x { position: relative; height: 18px; font-size: 12px; color: var(--muted); }
+.tl-x span { position: absolute; top: 0; white-space: nowrap; transform: translateX(-50%); }
+.tl-x span:first-child { transform: none; }
+.tl-x span:last-child { transform: translateX(-100%); }
+.tl-sub { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+.tl-sub b { font-weight: 600; color: var(--text); }
+.tl-sub .ip { font-family: "Cascadia Mono", ui-monospace, Consolas, monospace; color: var(--text); }
+
+/* picked period and hover hint: as on the main screen timelines */
+.tr-tl .tl-well[data-plot] { cursor: crosshair; touch-action: none; user-select: none; }
+.p-sel { fill: var(--period); }
+.p-sel-edge { fill: none; stroke: var(--accent); stroke-width: 2; }
+.tr-ov { position: absolute; inset: 0; pointer-events: none; }
+.tr-xh { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--muted); }
+.tr-dot { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; background: var(--well); }
+.tr-dot::after { content: ""; position: absolute; inset: 2px; border-radius: 50%; background: var(--line); }
+.tr-tip.tr-ptip { max-width: none; white-space: nowrap; }
+.tr-ptip-g { display: grid; grid-template-columns: auto auto auto auto; column-gap: 12px; row-gap: 2px; align-items: center; margin-top: 4px; }
+.tr-ptip-g .tp-l { font-weight: 600; }
+.tr-ptip-g .tp-v { display: inline-flex; align-items: center; justify-self: end; gap: 5px; font-weight: 600; }
+.tr-ptip-g .tp-o { grid-column: span 3; }
+.tr-tl-hint { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font-size: 12px; color: var(--muted); }
+.tr-selbar { display: flex; align-items: center; gap: 12px; min-height: 40px; margin-top: 8px; padding: 0 6px 0 12px; border-radius: var(--radius-ctl); background: var(--selected); color: var(--title); }
+.tr-selbar > .ico { flex: none; }
+.tr-selbar .sb-t { font-size: 14px; font-weight: 650; white-space: nowrap; }
+.tr-selbar .sb-r { font-size: 14px; white-space: nowrap; }
+.tr-selbar .sb-d, .tr-selbar .sb-n { font-size: 13px; color: var(--text); white-space: nowrap; }
+.tr-selbar .sb-n { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tr-selbar .tr-reset { margin-left: auto; flex: none; height: 30px; background: var(--layer); }
+.tr-selbar .tr-reset:hover { background: var(--control); }
+.tr-selbar .sb-esc { font-size: 12px; color: var(--muted); }
+
+/* ---------- probe types per hop ---------- */
+.tr-probe-seg { background: transparent; padding: 0; }
+
+/* 2B: the Probes column in the table, shown when the target has several probe types */
+/* latency band 1.2fr: with a wide Loss column the target name (one.one.one.one) still fits */
+.tr-tbl.mx { --cols: 28px minmax(118px, 150px) minmax(72px, 1fr) var(--loss-w) 40px 48px 48px 48px 48px 56px minmax(96px, 1.2fr) var(--pcol) minmax(188px, 236px) 32px; }
+.c-probes { display: flex; gap: 4px; }
+.c-probes > span { width: 52px; flex: none; display: flex; justify-content: center; }
+.tr-hd .c-probes > span { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; text-align: center; }
+.pm { display: inline-flex; padding: 3px; border-radius: 4px; cursor: help; }
+.pm:hover, .pm.is-hover { background: var(--control-hover); }
+.pm .mk { width: 12px; height: 12px; }
+.pm .mk-off { background: transparent; }
+@container screen (max-width: 1279px) {
+  .tr-tbl.mx, .tr-tbl.mx.has-nr { --gap: 8px; --loss-w: 56px; --cols: 28px 118px minmax(100px, 1fr) var(--loss-w) 40px 44px 44px 52px minmax(100px, 1.5fr) var(--pcol) minmax(180px, 220px) 32px; }
+  .tr-tbl.mx .c-loss .nr { display: none; }
+  .tr-tbl.mx .c-min, .tr-tbl.mx .c-max { display: none; }
+  .tr-tbl.mx .tr-hd > .g.lat { grid-column: 6 / 9 !important; }
+  .tr-tbl.mx .tr-hd > .g.scale { grid-column: 9 !important; }
+}

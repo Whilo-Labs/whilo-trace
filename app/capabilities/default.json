@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Main window: IPC with the app commands and events",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:allow-open"]
+}

@@ -1,0 +1,3 @@
+# The repo lives inside an Obsidian vault; a dot-folder keeps build output out of its index.
+[build]
+target-dir = ".target"
