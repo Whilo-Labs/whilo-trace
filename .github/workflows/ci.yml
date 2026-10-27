@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  # Engine, history and command line on all three systems. The probes that reach the network are ignored tests.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p whilo-trace-engine -p whilo-trace-store -p whilo-trace-cli
+
+  # The desktop app: tests and release binaries on Windows.
+  app:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p whilo-trace
+      - run: cargo build --release -p whilo-trace -p whilo-trace-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whilo-trace-windows
+          path: |
+            .target/release/whilo-trace.exe
+            .target/release/whilo-trace-cli.exe

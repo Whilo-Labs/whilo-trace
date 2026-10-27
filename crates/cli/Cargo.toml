@@ -1,0 +1,17 @@
+[package]
+name = "whilo-trace-cli"
+description = "Command line front end of Whilo Trace"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "whilo-trace-cli"
+path = "src/main.rs"
+
+[dependencies]
+whilo-trace-engine.workspace = true
+whilo-trace-store.workspace = true
+clap.workspace = true

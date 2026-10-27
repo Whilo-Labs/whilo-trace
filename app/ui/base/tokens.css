@@ -1,0 +1,70 @@
+/* Whilo Trace, palette E «Night». Flat: layers differ by fill only, no borders, no shadows.
+   Light is the default; dark follows the system unless ?theme= forces one. */
+:root,
+[data-theme="light"] {
+  --bg: #EDEDED;            /* window background */
+  --layer: #FFFFFF;         /* the layer above: cards, summary, timelines */
+  --well: #F1F1F1;          /* a well: chart area, lane of the strip */
+  --control: #E8E8E8;       /* button, picked item of a segmented control */
+  --control-hover: #DEDEDE;
+  --selected: #E1ECF5;      /* picked row */
+  --title: #1F1F1F;         /* headings, target names, numbers */
+  --text: #333333;          /* body text */
+  --muted: #666666;         /* labels, axes, secondary text (4.5:1 or more on every layer) */
+  --faint: #8C8C8C;         /* inactive only, not for text to read */
+  --accent: #0062C4;        /* primary button, links, focus */
+  --on-accent: #FFFFFF;
+  --line: #0079B0;          /* latency line */
+  --jitter: #959595;
+  --loss: #E0352E;          /* loss: a solid bar over the whole height */
+  --loss-text: #C4261F;
+  --zone-warn: #F6E2C2;     /* 100-200 ms */
+  --zone-bad: #F5D7D4;      /* above 200 ms */
+  --partial: #C27400;       /* marks: the node answered only some probes */
+  --ok: #03844A;
+  --silent: #A6A6A6;        /* hatching: the node does not answer probes of this type */
+  --grid: #E0E0E0;
+  --range: #C7DDEE;         /* min..max band */
+  --focus-ring: #0062C4;
+  --radius-card: 12px;
+  --radius-ctl: 8px;
+  --radius-chip: 6px;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
+  /* Shared by the parts and the screens: tooltips, menus, the dialog scrim, the picked period, row heights. */
+  --tip: var(--title);      /* tooltip fill */
+  --on-tip: var(--layer);   /* tooltip text */
+  --float: var(--control-hover);  /* menus and panels over the screen (no shadows) */
+  --float-hover: var(--layer);    /* menu item under the pointer */
+  --scrim: rgba(0, 0, 0, 0.5);    /* shade under a dialog */
+  --period: var(--range);   /* picked period: the window frame on the history strip and the selection on a timeline */
+  --accent-hover: #0058B0;  /* primary button under the pointer (white text 7.0:1) */
+  --partial-text: #8F5600;  /* amber for text (6.0:1 on --layer) */
+  --line-2: #1A9A5C;        /* second latency line, only for the «overlay» variant */
+  --row-h: 40px;            /* table row (summary, hops) */
+  --row-h-compact: 32px;    /* row with 10 or more targets */
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #1C1C1C; --layer: #262626; --well: #171717; --control: #404040; --control-hover: #4A4A4A; --selected: #263B4A;
+    --title: #DEDEDE; --text: #BABABA; --muted: #8C8C8C; --faint: #616161;
+    --accent: #006BE0; --on-accent: #FFFFFF; --line: #0E95D2; --jitter: #7A7A7A;
+    --loss: #FF4F47; --loss-text: #FF4F47; --zone-warn: #3B2D16; --zone-bad: #44231F; --partial: #FF9D14; --ok: #04A45A;
+    --silent: #5E5E5E; --grid: #303030; --range: #24719F; --focus-ring: #0E95D2;
+    --tip: var(--control); --on-tip: var(--title); --float: var(--control); --float-hover: var(--control-hover);
+    --scrim: rgba(0, 0, 0, 0.8); --period: var(--selected); --accent-hover: #0060C9; --partial-text: #FF9D14; --line-2: #21A366;
+    color-scheme: dark;
+  }
+}
+
+[data-theme="dark"] {
+  --bg: #1C1C1C; --layer: #262626; --well: #171717; --control: #404040; --control-hover: #4A4A4A; --selected: #263B4A;
+  --title: #DEDEDE; --text: #BABABA; --muted: #8C8C8C; --faint: #616161;
+  --accent: #006BE0; --on-accent: #FFFFFF; --line: #0E95D2; --jitter: #7A7A7A;
+  --loss: #FF4F47; --loss-text: #FF4F47; --zone-warn: #3B2D16; --zone-bad: #44231F; --partial: #FF9D14; --ok: #04A45A;
+  --silent: #5E5E5E; --grid: #303030; --range: #24719F; --focus-ring: #0E95D2;
+  --tip: var(--control); --on-tip: var(--title); --float: var(--control); --float-hover: var(--control-hover);
+  --scrim: rgba(0, 0, 0, 0.8); --period: var(--selected); --accent-hover: #0060C9; --partial-text: #FF9D14; --line-2: #21A366;
+  color-scheme: dark;
+}

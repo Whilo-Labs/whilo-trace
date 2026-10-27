@@ -1,0 +1,23 @@
+[package]
+name = "whilo-trace"
+description = "Whilo Trace desktop app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "whilo-trace"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+tauri.workspace = true
+tauri-plugin-dialog.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+whilo-trace-engine.workspace = true
+whilo-trace-store.workspace = true

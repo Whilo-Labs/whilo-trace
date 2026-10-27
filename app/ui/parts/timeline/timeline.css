@@ -1,0 +1,273 @@
+/* Whilo Trace v2, part "timeline": the timeline card, the stack and their states.
+   Only tokens from base/tokens.css. Flat: layers differ by fill, no borders, no shadows. */
+
+:root {
+  --tl-gutter: 60px;          /* column left of the chart: ms scale and «jitter» */
+  --tl-side: 256px;           /* label column in the «label on the left» layout */
+  --tl-tip: var(--title);     /* tooltip: dark plate in the light theme */
+  --tl-on-tip: var(--layer);
+}
+[data-theme="dark"] { --tl-tip: var(--control); --tl-on-tip: var(--title); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --tl-tip: var(--control); --tl-on-tip: var(--title); }
+}
+
+/* ---------- card ---------- */
+.tl {
+  position: relative;
+  background: var(--layer);
+  border-radius: var(--radius-card);
+  padding: var(--s3) var(--s4);
+}
+.tl-head { display: flex; align-items: center; gap: var(--s3); min-height: 28px; min-width: 0; }
+.tl-sp { flex: 1 1 auto; min-width: var(--s2); }
+
+.tl-grip {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 28px; margin: 0 -4px 0 -6px; padding: 0;
+  border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: grab;
+  touch-action: none;
+}
+.tl-grip:hover { background: var(--control); color: var(--title); }
+
+/* unpin a hop: on the label of a pinned hop, visible under the pointer and with the keyboard */
+.tl-unpin {
+  flex: none; display: inline-grid; place-items: center; width: 24px; height: 24px; margin-left: auto; padding: 0;
+  border: 0; border-radius: 6px; background: transparent; color: var(--text); cursor: pointer; visibility: hidden;
+}
+.tl:hover .tl-unpin, .tl:focus-within .tl-unpin { visibility: visible; }
+.tl-unpin:hover { background: var(--control); color: var(--title); }
+.tl-unpin svg { display: block; width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; }
+.tl-side .tl-unpin { width: 20px; height: 20px; margin-right: -4px; }
+
+.tl-id { display: flex; align-items: baseline; gap: var(--s3); min-width: 0; flex: 0 1 auto; }
+.tl-name {
+  color: var(--title); font-size: 14px; font-weight: 650;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto;
+}
+.tl-addr {
+  color: var(--muted); font-size: 12px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto;
+}
+.tl-sub { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.tl-id .chip, .tl-thead .chip, .tl-l3 .chip { align-self: center; flex: none; }
+
+.tl-status {
+  position: relative; display: inline-flex; align-items: center; gap: 6px; flex: none;
+  color: var(--text); font-size: 13px; white-space: nowrap; border-radius: 4px; cursor: default;
+}
+.tl-pct { color: var(--title); }
+/* a paused track: the chip next to its status */
+.chip.tl-pz { background: var(--selected); }
+/* in the label column a long status gives way to that chip (its full name is in the hint); the padding keeps
+   the dotted underline of the status inside the clip */
+.tl-l3.has-pz .tl-status { flex: 0 1 auto; min-width: 0; }
+.tl-l3.has-pz .tl-status > span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; padding-bottom: 6px; margin-bottom: -6px; }
+.tl-l3.has-pz .tl-pct { flex: none; }
+
+.tl-stats { display: flex; align-items: baseline; gap: var(--s4); white-space: nowrap; flex: none; }
+.tl-stat .k, .tl-per { color: var(--muted); font-size: 12px; margin-right: 5px; }
+.tl-per { margin-right: 0; }
+.tl-stat .v { color: var(--title); font-size: 13px; }
+.tl-win { color: var(--muted); font-size: 12px; white-space: nowrap; flex: none; }
+
+/* track line, when a target has several probe types */
+.tl-thead {
+  display: flex; align-items: center; gap: var(--s3); min-height: 22px;
+  margin: var(--s3) 0 0 var(--tl-gutter);
+}
+.tl-thead.is-first { margin-top: var(--s2); }
+.tl-thead + .tl-thead { margin-top: var(--s1); }
+.tl-key { display: inline-block; width: 14px; height: 2px; border-radius: 1px; background: var(--line); flex: none; align-self: center; }
+.tl-key.k2 { background: var(--tl-line-2, var(--title)); }
+
+/* ---------- track body: jitter and chart ---------- */
+.tl-tb { margin-top: var(--s2); }
+.tl-thead + .tl-tb { margin-top: 6px; }
+.tl-jrow, .tl-prow { display: grid; grid-template-columns: var(--tl-gutter) minmax(0, 1fr); }
+.tl-jlab {
+  align-self: center; justify-self: end; padding-right: var(--s2);
+  color: var(--muted); font-size: 12px; line-height: 1; white-space: nowrap;
+}
+.tl-jwell { position: relative; background: var(--well); border-radius: 4px; overflow: hidden; }
+.tl-jwell svg, .tl-clip svg { display: block; width: 100%; height: 100%; }
+.tl-prow { margin-top: var(--s1); }
+.tl-yax { position: relative; }
+.tl-yl {
+  position: absolute; right: var(--s2); transform: translateY(-50%);
+  color: var(--muted); font-size: 12px; line-height: 1; white-space: nowrap;
+}
+.tl-yl.t { transform: translateY(1px); }
+.tl-yl.b { transform: translateY(-100%); }
+.tl-plot { position: relative; touch-action: none; }
+.tl-plot.is-live { cursor: crosshair; }
+.tl-clip { position: absolute; inset: 0; background: var(--well); border-radius: var(--radius-ctl); overflow: hidden; }
+.tl-ov { position: absolute; inset: 0; pointer-events: none; }
+
+/* chart marks */
+.tl svg path { vector-effect: non-scaling-stroke; }
+.tl .sel { fill: var(--period, var(--selected)); }
+.tl .z-warn { fill: var(--zone-warn); }
+.tl .z-bad { fill: var(--zone-bad); }
+.tl .grid { fill: none; stroke: var(--grid); stroke-width: 1; }
+.tl .hatch { fill: none; stroke: var(--silent); stroke-width: 1; }
+.tl .loss { fill: var(--loss); }
+.tl .part { fill: var(--partial); }
+.tl .lat { fill: none; stroke: var(--line); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.tl .lat.l2 { stroke: var(--tl-line-2, var(--title)); }
+.tl .jit { fill: none; stroke: var(--jitter); stroke-width: 1.5; stroke-linejoin: round; }
+.tl .jit.l1 { stroke: var(--line); }
+.tl .jit.l2 { stroke: var(--tl-line-2, var(--title)); }
+.tl .sel-edge { fill: none; stroke: var(--accent); stroke-width: 2; }
+/* paused track: line, jitter and zones fade, loss bars stay solid */
+.tl-tb.is-paused .lat, .tl-tb.is-paused .jit, .tl-tb.is-paused .part, .tl-tb.is-paused .grid,
+.tl-tb.is-paused .z-warn, .tl-tb.is-paused .z-bad { opacity: .4; }
+
+/* a row with an error: the error well of the history part (he.css, er-*) in place of the jitter strip and the
+   chart, under the charts of the other cards; no ms scale. The height comes from the view (jitter + chart). */
+.tl-eb { position: relative; margin: var(--s2) 0 0 var(--tl-gutter); min-width: 0; }
+.tl-thead + .tl-eb { margin-top: 6px; }
+.tl--side .tl-eb { margin-top: 0; }
+.tl-eb > .er-well { height: 100%; border-radius: var(--radius-ctl); }
+.tl-eb .er-msg > div { min-width: 0; }
+.tl-eb .er-msg-t, .tl-eb .er-msg-s { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* the well's icon keeps its size and line here too, whatever global icon rules the history part keeps */
+.tl-eb .er-msg svg { flex: none; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; color: var(--muted); }
+
+/* time axis */
+.tl-xax { position: relative; height: 16px; container-type: inline-size; }
+.tl > .tl-xax, .tl-main > .tl-xax { margin: 6px 0 0 var(--tl-gutter); }
+.tl-xl {
+  position: absolute; top: 0; transform: translateX(-50%);
+  color: var(--muted); font-size: 12px; line-height: 16px; white-space: nowrap;
+}
+/* labels sit centred on their moment (--p, % of the axis); near the ends they shift just enough to stay inside */
+.tl-xl.is-l { transform: none; }
+.tl-xl.is-r { transform: translateX(-100%); }
+.tl-xl[style*="--p"] { transform: translateX(clamp(calc(var(--p) * -1cqw), -50%, calc((100 - var(--p)) * 1cqw - 100%))); }
+/* a tight axis writes a day once: on the first label and where the day changes (the view measures it);
+   a label that still does not fit is left out */
+.tl-xax.is-tight .tl-xl.is-rep .tl-xd { display: none; }
+.tl-xl.is-off { visibility: hidden; }
+
+/* ---------- hover ---------- */
+.tl-xh { position: absolute; top: 0; bottom: 0; width: 1px; margin-left: -0.5px; background: var(--muted); }
+.tl-dot { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; }
+.tl-dot svg { display: block; }
+.tl-dot .ring { fill: var(--well); }
+.tl-dot .core { fill: var(--line); }
+.tl-dot.d2 .core { fill: var(--tl-line-2, var(--title)); }
+
+.tl-tip {
+  position: absolute; z-index: 20;
+  padding: var(--s2) 10px; border-radius: var(--radius-ctl);
+  background: var(--tl-tip); color: var(--tl-on-tip);
+  font-size: 12px; line-height: 1.35; white-space: nowrap; pointer-events: none;
+}
+.tl-tip .mark { flex: none; }
+.tl-tip-t { display: block; font-size: 13px; font-weight: 650; margin-bottom: 4px; }
+.tl-tip-g { display: grid; grid-template-columns: auto auto; column-gap: var(--s4); row-gap: 2px; align-items: center; }
+.tl-tip-g.g3 { grid-template-columns: auto auto auto; }
+.tl-tip-g .v { justify-self: end; display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+.tl-tip-g .h { justify-self: end; }
+.tl-tip-g .p { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.tl-tip-s { display: flex; align-items: center; gap: 6px; }
+.tl-tip.tl-hint { white-space: normal; width: 300px; font-size: 12px; line-height: 1.45; }
+.tl-status > .tl-hint { left: -2px; top: calc(100% + 8px); }
+.tl-hint.is-float { position: absolute; }
+.tl-sellab { top: 6px; transform: translateX(-50%); }
+
+/* ---------- stack ---------- */
+.tl-stackwrap { position: relative; }
+.tl-stackwrap[data-layout="row"] { --tl-plot-left: calc(var(--s4) + var(--tl-gutter)); }
+.tl-stackwrap[data-layout="side"] { --tl-plot-left: calc(var(--s4) + var(--tl-side) + var(--tl-gutter)); }
+.tl-shead {
+  display: flex; align-items: center; gap: var(--s3); min-height: 44px;
+  margin-bottom: var(--s2); padding: 0 var(--s2) 0 var(--s4); border-radius: var(--radius-card);
+}
+.tl-shead h2 { font-size: 16px; white-space: nowrap; }
+.tl-sh-w, .tl-sh-h { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.tl-sh-h { margin-left: auto; padding-right: var(--s2); overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.tl-shead.is-sel { background: var(--selected); color: var(--title); }
+.tl-shead.is-sel svg { flex: none; color: var(--title); }
+.tl-sh-t { font-weight: 650; font-size: 14px; white-space: nowrap; }
+.tl-sh-r { font-size: 14px; white-space: nowrap; }
+.tl-sh-d, .tl-sh-n { color: var(--text); font-size: 13px; white-space: nowrap; }
+.tl-sh-n { overflow: hidden; text-overflow: ellipsis; min-width: 0; margin-left: var(--s3); }
+.tl-shead .tl-reset { margin-left: auto; flex: none; height: 30px; background: var(--layer); }
+.tl-shead .tl-reset:hover { background: var(--control); }
+.tl-esc { color: var(--muted); font-size: 12px; }
+
+.tl-stack { position: relative; display: flex; flex-direction: column; gap: var(--s2); }
+.tl-axisbar {
+  position: sticky; bottom: 0; z-index: 3;
+  margin-top: var(--s1); padding: 6px var(--s4) 8px var(--tl-plot-left);
+  background: var(--bg);
+}
+
+/* ---------- drag to reorder (the view): the card fades in place, a line shows the drop place, a token in hand ---------- */
+.tl.is-source { opacity: .38; }
+.tl-ins { position: fixed; z-index: 60; height: 2px; margin-top: -1px; border-radius: 1px; background: var(--accent); pointer-events: none; }
+.tl-ins::before { content: ""; position: absolute; left: -4px; top: -3px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.tl-ins[hidden] { display: none; }
+.tl-token {
+  position: fixed; z-index: 61; display: flex; align-items: center; gap: var(--s2);
+  height: 32px; padding: 0 var(--s3) 0 6px; border-radius: var(--radius-ctl);
+  background: var(--control); color: var(--title); font-size: 13px; white-space: nowrap; pointer-events: none;
+}
+.tl-token svg { width: 16px; height: 16px; stroke-width: 2; }
+.tl-token .mono { font-size: 13px; }
+.tl-token .chip { background: var(--layer); }
+.tl-mk { display: block; width: 10px; height: 10px; border-radius: 2px; flex: none; }
+
+/* ---------- frozen drag for the part's page: the lifted card over an opened stack ---------- */
+.tl.is-lifted { background: var(--selected); cursor: grabbing; z-index: 30; }
+.tl.is-lifted .tl-grip { background: var(--layer); color: var(--title); cursor: grabbing; }
+/* on the selection fill --muted is below 4.5:1 in the dark theme, so secondary text is --text here */
+.tl.is-lifted .tl-addr, .tl.is-lifted .tl-sub, .tl.is-lifted .tl-stat .k, .tl.is-lifted .tl-per,
+.tl.is-lifted .tl-jlab, .tl.is-lifted .tl-yl, .tl.is-lifted .tl-xl, .tl.is-lifted .tl-win { color: var(--text); }
+.tl.is-away { display: none; }
+.tl-ghost { position: fixed; margin: 0; pointer-events: none; }
+/* drop place: the stack opens, a blue line with a dot on top */
+.tl-slot { position: relative; flex: none; padding-top: 12px; }
+.tl-slot::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 3px; border-radius: 2px; background: var(--accent); }
+.tl-slot::after { content: ""; position: absolute; left: -4px; top: -3px; width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+.tl-slot > .tl { transform: translateX(14px); }
+html.tl-dragging, html.tl-dragging * { cursor: grabbing !important; user-select: none; }
+
+/* ---------- probe type switch (variant C) ---------- */
+.tl-seg { flex: none; background: var(--well); }
+.tl-seg button { display: inline-flex; align-items: center; gap: 6px; height: 26px; }
+.tl-seg button[aria-pressed="true"] { background: var(--layer); }
+.tl-seg .num { font-weight: 400; color: var(--text); }
+.tl-seg button[aria-pressed="true"] .num { color: var(--title); }
+
+/* ---------- layout «label on the left» ---------- */
+.tl--side .tl-srow { display: grid; grid-template-columns: var(--tl-side) minmax(0, 1fr); }
+.tl--side .tl-srow + .tl-srow { margin-top: var(--s3); }
+.tl--side .tl-tb { margin-top: 0; }
+.tl-side { min-width: 0; padding-right: var(--s3); display: flex; flex-direction: column; gap: 2px; }
+.tl-side .tl-l1, .tl-side .tl-l2, .tl-side .tl-l3 { display: flex; align-items: center; gap: var(--s2); min-width: 0; min-height: 20px; }
+.tl-side .tl-l2, .tl-side .tl-l4 { min-height: 18px; }
+.tl-side .tl-grip { height: 20px; }
+.tl-side .tl-l2 { padding-left: 22px; }
+.tl-side .tl-l3, .tl-side .tl-l4 { padding-left: 22px; }
+.tl-side .tl-srow + .tl-srow .tl-l3, .tl-srow.is-next .tl-l3, .tl-srow.is-next .tl-l4 { padding-left: 22px; }
+.tl-side .tl-stats { gap: var(--s3); }
+.tl-side .tl-stat .k { margin-right: 4px; }
+.tl-main { min-width: 0; }
+
+/* ---------- legend (for the header legend) ---------- */
+.lg { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3) var(--s5); }
+.lg-item { display: inline-flex; align-items: center; gap: var(--s2); color: var(--text); font-size: 13px; white-space: nowrap; }
+.lg-sw { display: inline-block; flex: none; width: 32px; height: 16px; border-radius: 3px; overflow: hidden; background: var(--well); }
+.lg-sw svg { display: block; }
+.lg-sw.lg-warn { background: var(--zone-warn); }
+.lg-sw.lg-bad { background: var(--zone-bad); }
+.lg-line { fill: none; stroke: var(--line); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.lg-loss { fill: var(--loss); }
+.lg-part { fill: var(--partial); }
+.lg-hatch { fill: none; stroke: var(--silent); stroke-width: 1; }
+.lg-jit { fill: none; stroke: var(--jitter); stroke-width: 1.5; stroke-linejoin: round; }
+.lg-sel { fill: var(--selected); }
+.lg-edge { fill: none; stroke: var(--accent); stroke-width: 2; }

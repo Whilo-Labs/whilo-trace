@@ -1,0 +1,7 @@
+/.target/
+/target/
+/app/gen/
+*.db
+*.db-wal
+*.db-shm
+/reports/

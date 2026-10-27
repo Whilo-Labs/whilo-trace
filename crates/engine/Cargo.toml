@@ -1,0 +1,15 @@
+[package]
+name = "whilo-trace-engine"
+description = "Path probing and per-hop statistics for Whilo Trace"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+dns-lookup.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

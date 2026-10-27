@@ -1,0 +1,181 @@
+/* Whilo Trace, header part: header, add form, time window, legend, settings card, status line styles.
+   Tokens from base/tokens.css only. Flat: layers by fill, no borders, shadows or gradients.
+   The header stands right on the window background (--bg), so its controls are filled with --layer
+   and the picked item inside a track with --control. */
+
+/* Line icons */
+svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.wth [hidden], .wth-side [hidden] { display: none !important; }
+
+/* Tooltips show on hover and on keyboard focus */
+.has-tip { position: relative; }
+.wth-tip { display: none; }
+.has-tip:hover > .wth-tip, .has-tip:focus-visible > .wth-tip { display: block; }
+
+/* ---------- Header ---------- */
+.wth { position: relative; display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4) var(--s5) 0; }
+.wth-row { display: flex; align-items: flex-start; gap: var(--s2); min-width: 0; }
+/* The legend goes under the window track only when the window is too narrow for both (the app allows 960 px) */
+.wth-row-view { align-items: center; flex-wrap: wrap; }
+.wth-spacer { flex: 1 1 0; min-width: var(--s4); }
+
+.wth-brand { display: flex; align-items: center; gap: var(--s2); height: 34px; margin-right: var(--s4); flex: none; }
+.wth-brand img { display: block; width: 28px; height: 28px; }
+.wth-brand-name { font-size: 16px; font-weight: 650; color: var(--title); white-space: nowrap; }
+
+.wth-add { display: flex; align-items: flex-start; gap: var(--s2); flex: 0 1 auto; min-width: 0; margin: 0; }
+.wth-label { font-size: 13px; color: var(--muted); white-space: nowrap; }
+.wth-group { display: flex; align-items: center; gap: var(--s2); height: 34px; flex: none; }
+
+/* Field "name or IP" */
+.wth-field { position: relative; flex: 0 1 340px; width: 340px; min-width: 220px; }
+.wth-field-box { position: relative; height: 34px; }
+.wth-field-box > .i { position: absolute; left: 12px; top: 9px; color: var(--muted); pointer-events: none; }
+.wth-input {
+  display: block; width: 100%; height: 34px; padding: 0 var(--s3) 0 36px; border: 0; border-radius: var(--radius-ctl);
+  background: var(--layer); color: var(--title); font: inherit; font-size: 14px;
+}
+.wth-input::placeholder { color: var(--muted); }
+.wth-input:focus { outline: none; }
+.wth-input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/* Input error: text colour with the warning icon in the field; red is only for loss */
+.wth-field.is-error .wth-field-box > .i { color: var(--title); }
+.wth-error { display: flex; align-items: center; gap: var(--s1); margin-top: var(--s2); padding-left: var(--s1); font-size: 12px; line-height: 16px; color: var(--title); }
+/* The text keeps its width up to the whole line (then ends with an ellipsis, the full text is in its hint); the host shrinks first */
+.wth-error > span:first-child { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wth-error .mono { color: var(--title); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* Tracks (on top of .seg from base.css) */
+.wth .seg { flex: none; }
+.wth .seg button { display: inline-flex; align-items: center; gap: var(--s1); white-space: nowrap; }
+.wth .seg button:hover { color: var(--title); }
+.wth .seg button[aria-pressed="true"]:hover { color: var(--title); }
+.wth .seg button[aria-disabled="true"], .wth .seg button[aria-disabled="true"]:hover { color: var(--faint); cursor: not-allowed; }
+.wth .seg button .i { width: 12px; height: 12px; stroke-width: 1.75; }
+.wth .seg button:focus { outline: none; }
+.wth .seg button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.wth-opt { position: relative; }
+
+/* TCP port */
+.wth-port { display: inline-flex; align-items: center; gap: var(--s2); height: 34px; padding: 0 var(--s3); border-radius: var(--radius-ctl); background: var(--layer); flex: none; cursor: text; }
+.wth-port > span { font-size: 13px; color: var(--muted); }
+.wth-port input { width: 5ch; padding: 0; border: 0; background: transparent; color: var(--title); font: inherit; font-size: 14px; font-variant-numeric: tabular-nums; }
+.wth-port input:focus { outline: none; }
+.wth-port:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* Interval: list button */
+.wth-select { position: relative; flex: none; }
+.wth-select-btn {
+  display: inline-flex; align-items: center; gap: var(--s2); height: 34px; padding: 0 var(--s2) 0 var(--s3); border: 0; border-radius: var(--radius-ctl);
+  background: var(--layer); color: var(--title); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap;
+}
+.wth-select-btn > .i { color: var(--muted); }
+.wth-select-btn > .i-clock { display: none; }
+.wth-select-btn:hover > .wth-label, .wth-select-btn:hover > .i { color: var(--title); }
+.wth-select.is-open .wth-select-btn > .i-chev { transform: rotate(180deg); }
+.wth-select-btn:focus { outline: none; }
+.wth-select-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+.wth-add-btn { flex: none; }
+.wth-add-btn .i { width: 16px; height: 16px; }
+.wth .btn:focus { outline: none; }
+.wth .btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* Icon button on the window background */
+.wth-icon-btn {
+  display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; border: 0; flex: none;
+  border-radius: var(--radius-ctl); background: var(--layer); color: var(--muted); cursor: pointer;
+}
+.wth-icon-btn:hover { color: var(--title); }
+.wth-icon-btn[aria-expanded="true"] { background: var(--selected); color: var(--title); }
+.wth-icon-btn:focus { outline: none; }
+.wth-icon-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* ---------- Pop-ups (menus, tooltips) ---------- */
+.wth-menu {
+  position: absolute; top: calc(100% + var(--s1)); left: 0; z-index: 20; min-width: 100%; margin: 0; padding: var(--s1); list-style: none;
+  border-radius: var(--radius-ctl); background: var(--float); color: var(--title); font-size: 13px;
+}
+.wth-menu-head { padding: var(--s2) var(--s2) var(--s1); font-size: 12px; color: var(--text); text-transform: uppercase; letter-spacing: 0.04em; }
+.wth-menu-item { display: flex; align-items: center; gap: var(--s2); height: 32px; padding: 0 var(--s2); border-radius: 6px; cursor: pointer; white-space: nowrap; }
+/* .is-hover: the item picked with the arrow keys */
+.wth-menu-item:hover, .wth-menu-item.is-hover { background: var(--float-hover); }
+.wth-menu-item > .i { color: var(--text); }
+.wth-menu-item .mono { font-size: 13px; color: var(--title); overflow: hidden; text-overflow: ellipsis; }
+.wth-menu-item .aside { margin-left: auto; padding-left: var(--s4); font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.wth-menu-item.is-on { font-weight: 600; }
+.wth-menu-item .ck { width: 16px; height: 16px; flex: none; }
+.wth-menu-item .ck .i { color: var(--title); }
+.wth-history { width: max(100%, 400px); }
+.wth-intervals { min-width: 200px; }
+
+.has-tip > .wth-tip {
+  position: absolute; top: calc(100% + var(--s2)); left: 0; z-index: 30; width: max-content; max-width: 300px;
+  padding: var(--s2) var(--s3); border-radius: var(--radius-ctl); background: var(--tip); color: var(--on-tip);
+  font-size: 12px; font-weight: 400; line-height: 1.45; white-space: normal; text-align: left; pointer-events: none;
+}
+.has-tip > .wth-tip.to-right { left: auto; right: 0; }
+.has-tip > .wth-tip.up { top: auto; bottom: calc(100% + var(--s2)); }
+.wth-legend li:focus { outline: none; }
+.wth-legend li:focus-visible, .wth-label.has-tip:focus-visible, .wts .has-tip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: 4px; }
+.wth-label.has-tip, .wts .has-tip { cursor: default; }
+
+/* ---------- Time window and legend ---------- */
+.wth-legend {
+  display: flex; align-items: center; gap: var(--s4); height: 34px; margin: 0; padding: 0 var(--s3); list-style: none; flex: none;
+  border-radius: var(--radius-ctl); background: var(--layer); font-size: 12px; color: var(--text);
+}
+.wth-legend li { position: relative; display: flex; align-items: center; gap: var(--s2); white-space: nowrap; cursor: default; }
+.wth-legend li.lg-scale { gap: var(--s1); }
+.wth-legend li.lg-scale > .lg-word { margin-right: var(--s1); }
+.wth-legend .num { font-variant-numeric: tabular-nums; }
+.wth-sw { display: block; width: 24px; height: 14px; border-radius: 3px; overflow: hidden; background: var(--well); flex: none; }
+.wth-sw svg { display: block; width: 24px; height: 14px; }
+.wth-sw .f-warn { fill: var(--zone-warn); }
+.wth-sw .f-bad { fill: var(--zone-bad); }
+.wth-sw .f-loss { fill: var(--loss); }
+.wth-sw .f-partial { fill: var(--partial); }
+.wth-sw .s-silent { stroke: var(--silent); stroke-width: 1.5; fill: none; }
+.wth-sw .s-line { stroke: var(--line); stroke-width: 1.5; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+
+/* ---------- Settings card (right of the data) ---------- */
+.wth-side { padding: var(--s4); border-radius: var(--radius-card); background: var(--layer); color: var(--text); }
+.wth-pop-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--s4); }
+.wth-pop-head h2 { font-size: 16px; }
+.wth-ghost { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text); cursor: pointer; }
+.wth-ghost:hover { background: var(--float-hover); color: var(--title); }
+.wth-side .wth-ghost:hover { background: var(--control); }
+.wth-ghost:focus { outline: none; }
+.wth-ghost:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.wth-set { display: grid; gap: var(--s2); justify-items: start; }
+.wth-set + .wth-set { margin-top: var(--s4); }
+.wth-set-label { font-size: 13px; font-weight: 600; color: var(--title); }
+.wth-th { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.wth-num { display: inline-flex; align-items: center; gap: var(--s2); height: 34px; padding: 0 var(--s3) 0 var(--s2); border-radius: var(--radius-ctl); background: var(--well); font-size: 13px; color: var(--text); cursor: text; }
+.wth-num .wth-sw { width: 18px; height: 18px; border-radius: 4px; }
+.wth-num .wth-sw svg { width: 18px; height: 18px; }
+.wth-num input { width: 4ch; padding: 0; border: 0; background: transparent; color: var(--title); font: inherit; font-size: 14px; font-variant-numeric: tabular-nums; }
+/* Number fields as wide as their value (WebView2 and Chromium support it), otherwise the fixed width above */
+@supports (field-sizing: content) {
+  .wth-port input, .wth-num input { width: auto; field-sizing: content; min-width: 2ch; max-width: 6ch; }
+}
+.wth-num input:focus { outline: none; }
+.wth-num:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.wth-hint { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text); }
+.wth-side .seg button:hover { color: var(--title); }
+.wth-side .seg button:focus { outline: none; }
+.wth-side .seg button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+
+/* ---------- Status line (bottom of the window, drawn by the screen) ---------- */
+.wts { display: flex; align-items: center; gap: var(--s4); height: 32px; padding: 0 var(--s5); font-size: 12px; color: var(--muted); white-space: nowrap; }
+.wts .num { font-variant-numeric: tabular-nums; }
+.wts-item { display: inline-flex; align-items: center; gap: var(--s2); }
+.wts-right { margin-left: auto; }
+
+/* ---------- Narrow window ---------- */
+@media (max-width: 1279px) {
+  .wth .wth-wide, .wth-legend .lg-word { display: none; }
+  .wth-select-btn > .i-clock { display: block; }
+  .wth-legend { gap: var(--s3); }
+  .wth .wth-window button { padding: 0 var(--s2); }
+}

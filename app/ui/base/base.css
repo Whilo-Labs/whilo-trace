@@ -1,0 +1,76 @@
+/* Shared primitives for all Whilo Trace design parts. Use tokens.css variables only, never raw hex. */
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+h1, h2, h3 { margin: 0; color: var(--title); font-weight: 650; }
+h1 { font-size: 20px; }
+h2 { font-size: 16px; }
+h3 { font-size: 14px; }
+.mono { font-family: "Cascadia Mono", ui-monospace, Consolas, monospace; }
+.muted { color: var(--muted); }
+.num { font-variant-numeric: tabular-nums; }
+:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* Surfaces */
+.layer { background: var(--layer); border-radius: var(--radius-card); }
+.well { background: var(--well); border-radius: var(--radius-ctl); }
+
+/* Buttons: emphasis by fill, never by outline */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--s2);
+  height: 34px; padding: 0 14px; border: 0; border-radius: var(--radius-ctl);
+  background: var(--control); color: var(--title);
+  font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap;
+}
+.btn:hover { background: var(--control-hover); }
+.btn-primary { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.btn-primary:hover { background: var(--accent); filter: brightness(1.08); }
+.btn-icon { width: 34px; padding: 0; }
+.btn-ghost { background: transparent; color: var(--muted); }
+.btn-ghost:hover { background: var(--control); color: var(--title); }
+
+/* Segmented control: selected item gets the control fill */
+.seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: var(--radius-ctl); background: var(--layer); }
+.seg button {
+  height: 28px; padding: 0 10px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer;
+}
+.seg button[aria-pressed="true"] { background: var(--control); color: var(--title); font-weight: 600; }
+.seg button:not(:disabled):not([aria-disabled="true"]):hover { color: var(--title); }
+
+/* Chips: small labels such as the probe type. Filled, no outline */
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px;
+  border-radius: var(--radius-chip); background: var(--control); color: var(--title);
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap;
+}
+
+/* Status mark: a small square or dot plus text in the status colour */
+.mark { display: inline-block; width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.t-loss { color: var(--loss-text); }
+.t-partial { color: var(--partial); }
+.t-ok { color: var(--ok); }
+
+/* Inputs */
+.input {
+  height: 34px; padding: 0 12px; border: 0; border-radius: var(--radius-ctl);
+  background: var(--layer); color: var(--title); font: inherit; font-size: 14px;
+}
+.input::placeholder { color: var(--muted); }
+
+/* Small button for rows, card headers and the history strip */
+.btn-sm { height: 28px; padding: 0 10px; font-size: 12px; }
+.btn-sm.btn-icon { width: 28px; padding: 0; }
+/* Controls right on the window background (--bg): in the light theme --control is almost --bg, so
+   plain buttons and chips are filled with --layer, with --control-hover under the pointer. */
+.on-bg .btn:not(.btn-primary):not(.btn-ghost), .btn-onbg { background: var(--layer); }
+.on-bg .btn:not(.btn-primary):not(.btn-ghost):hover, .btn-onbg:hover { background: var(--control-hover); }
+.on-bg .btn-ghost:hover { background: var(--layer); color: var(--title); }
+.on-bg .chip { background: var(--layer); }
+/* The primary button darkens under the pointer (--accent-hover) instead of brightening with a filter */
+.btn-primary.btn-accent-hover:hover { background: var(--accent-hover); filter: none; }

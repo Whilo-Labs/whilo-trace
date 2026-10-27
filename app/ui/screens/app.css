@@ -1,0 +1,135 @@
+/* Whilo Trace, the screens: layout of the window and the parts put together.
+   Loaded last, after the CSS of the parts, and only overrides them. Colours only from base/tokens.css.
+   Why a rule aligns the parts is said next to it. */
+
+/* ---------- app window ---------- */
+html, body { height: 100%; }
+body.scr-app { overflow: hidden; }
+.app { display: flex; flex-direction: column; height: 100vh; }
+.app > .wth { flex: none; }
+.app-past { flex: none; padding: var(--s4) var(--s5) 0; }
+.app-past[hidden] { display: none; }
+.app-body { position: relative; display: flex; flex: 1 1 auto; min-height: 0; }
+/* A thin scrollbar (about 10 px) always takes its place: the right padding is smaller by its width, so the right
+   edge of the cards lines up with the header, the past bar and the history strip (24 px from the window edge). */
+.app-scroll {
+  --sb: 10px;
+  flex: 1 1 auto; min-width: 0; overflow-x: hidden; overflow-y: auto; padding: var(--s4) calc(var(--s5) - var(--sb)) 0 var(--s5);
+  scrollbar-width: thin; scrollbar-color: var(--control-hover) transparent; scrollbar-gutter: stable;
+}
+.app-scroll > * + * { margin-top: var(--s4); }
+/* Settings, variant B: a card on the right, the screen narrows; 12 px between them (the scrollbar is part of it) */
+.app-body > .wth-side { flex: none; align-self: flex-start; width: 360px; max-height: calc(100% - 32px); overflow: auto; margin: var(--s4) var(--s5) 0 0; }
+.app-body:has(> .wth-side:not([hidden])) > .app-scroll { padding-right: calc(var(--s3) - var(--sb)); }
+.app-foot { flex: none; padding: var(--s3) var(--s5) 0; }
+.app-foot .wts { padding: 0; }
+
+/* Trace: the whole window scrolls, the header sticks to the top */
+body.scr-trace { background: var(--bg); }
+.scr-trace .screen { min-height: 100vh; }
+
+/* ---------- shared by the parts ---------- */
+/* Chip: a size from the scale (was 11 px) */
+.chip { font-size: 12px; }
+/* The primary button darkens under the pointer instead of brightening with a filter */
+.btn-primary:hover, .wth .btn-primary.is-hover, .hx.emph[data-mode="past"] .hx-now:hover { background: var(--accent-hover); filter: none; }
+
+/* One tooltip fill for every part: --tip / --on-tip (light theme: a dark plate, dark theme: a layer above the card) */
+.has-tip > .wth-tip, .sum-tip, .tl-tip, .tr-tip, .hx-read:not(.acc) { background: var(--tip); color: var(--on-tip); }
+.wth-tip, .sum-tip, .tl-tip, .tr-tip { font-size: 12px; line-height: 1.45; }
+/* Menus and panels over the screen: one fill --float, a menu row is 32 px */
+.wth-menu, .wth-pop, .tr-menu { background: var(--float); }
+.wth-menu-item:hover, .wth-menu-item.is-hover, .wth-ghost:hover { background: var(--float-hover); }
+.tr-menu button { height: 32px; }
+.tr-menu button:hover, .tr-menu button[aria-checked="true"] { background: var(--float-hover); }
+
+/* Buttons on the window background (headers of both screens): --layer fill, --control-hover under the pointer */
+.wth-select-btn:hover, .wth-select-btn.is-hover, .wth-icon-btn:hover, .wth-icon-btn.is-hover { background: var(--control-hover); }
+.wth-icon-btn[aria-expanded="true"]:hover { background: var(--selected); }
+
+/* Status mark: a 10 px square in every part (the timeline had 8 px) */
+.tl .mark, .tl-tip .mark { width: 10px; height: 10px; border-radius: 2px; }
+/* Drag grip: the same sign in the summary and the stack */
+.tl-grip svg { stroke-width: 2; }
+/* A status with an explanation is underlined with dots, as in the hop table */
+.tl-status[data-hint] > span:first-of-type { text-decoration: underline dotted; text-decoration-color: var(--muted); text-underline-offset: 4px; }
+
+/* ---------- timeline stack ---------- */
+.tl .sel, .lg-sel { fill: var(--period); }
+.tl-sh-w, .tl-sh-h { font-size: 13px; }
+/* The row picked in the summary highlights its timeline with the same fill */
+.tl.scr-picked { background: var(--selected); }
+.tl.scr-picked .tl-addr, .tl.scr-picked .tl-sub, .tl.scr-picked .tl-stat .k, .tl.scr-picked .tl-per,
+.tl.scr-picked .tl-jlab, .tl.scr-picked .tl-yl, .tl.scr-picked .tl-win { color: var(--text); }
+.tl.scr-picked .chip { background: var(--layer); }
+/* A paused track (MVP 12): the timeline part fades it and draws its «paused» chip (.tl-pz);
+   screens/main.js adds this one only for a part without it */
+.chip.scr-pz { background: var(--selected); }
+/* The shared time axis does not stick until a whole timeline is visible above it (screens/main.js, fixAxis) */
+.tl-axisbar.scr-free { position: static; }
+/* The drag (the same in the summary and the stack) is drawn by the parts: .sum-ins, .sum-token and .tl-ins, .tl-token */
+
+/* ---------- history strip and past bar ---------- */
+.hx { padding: var(--s2) var(--s4); }
+.pb { padding: var(--s2) var(--s2) var(--s2) var(--s4); }
+/* The readout on hover and drag stands above the strip (6 px over the frame), the axis labels under it stay */
+.app-foot .hx-read { top: auto; bottom: calc(100% + 40px); z-index: 2; }
+.app-foot .hx-tk.off { visibility: visible; }
+/* An empty strip: the time labels stay readable (--muted), the text on the strip explains the emptiness */
+.hx.is-empty .hx-ticks { color: var(--muted); }
+/* First run: the second name on the quick-start buttons is --text (--muted on --control is 3.1:1 in the dark theme) */
+.es-pick .es-aside { color: var(--text); }
+
+/* ---------- the core does not answer (screens/main.js): a calm message in the data area, laid out as the first run ---------- */
+.scr-down { display: flex; flex-direction: column; align-items: center; padding: 88px var(--s5) 96px; text-align: center; }
+.scr-down h2 { font-size: 20px; }
+.scr-down p { max-width: 580px; margin: var(--s2) 0 0; font-size: 14px; color: var(--text); }
+
+/* ---------- an input error in the header is not red: on screen red is only for loss ---------- */
+.wth-field.is-error .wth-field-box > .i { color: var(--title); }
+.wth-error, .wth-error .mono { color: var(--title); }
+
+/* ---------- status line ---------- */
+.scr-probes { display: inline-flex; align-items: center; gap: var(--s2); }
+.scr-probes .chip { background: var(--layer); }
+.scr-probes .n { margin-right: var(--s1); }
+/* A failed action or data that no longer comes (screens/main.js): one neutral line, the first to shrink */
+.wts-item.scr-note { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--title); }
+
+/* ---------- dialog over the screen ---------- */
+.scr-modal .ms { position: fixed; inset: 0; z-index: 90; overflow: auto; padding: var(--s6) var(--s5); border-radius: 0; background: transparent; }
+.scr-modal .ms-bg { display: none; }
+.scr-modal .ms-scrim { position: fixed; inset: 0; background: var(--scrim); }
+/* Report preview (variant B): the hop table fits the sheet with denser columns and a wrapping status; a thin scrollbar */
+.rp-paper { scrollbar-width: thin; scrollbar-color: var(--control-hover) transparent; }
+.rp-paper th, .rp-paper td { padding: 4px 5px; }
+.rp-paper td.st { white-space: normal; }
+
+/* ---------- trace screen ---------- */
+/* The header stands on the window background, as on «All targets»: the same 16 px on top and 24 px at the sides,
+   its controls filled with --layer */
+.scr-trace .tr-head { position: sticky; top: 0; z-index: 20; min-height: 0; padding: var(--s4) var(--s5) var(--s3); background: var(--bg); gap: var(--s3) var(--s4); }
+.scr-trace .tr-head .btn:not(.btn-primary):not(.btn-ghost) { background: var(--layer); }
+.scr-trace .tr-head .btn:not(.btn-primary):not(.btn-ghost):hover { background: var(--control-hover); }
+.scr-trace .tr-head .btn-ghost { color: var(--text); }
+.scr-trace .tr-head .btn-ghost:hover { background: var(--layer); color: var(--title); }
+.scr-trace .tr-head .chip { background: var(--layer); }
+.scr-trace .tr-probe-seg { padding: 3px; background: var(--layer); }
+.scr-trace .tr-main { gap: var(--s4); padding: var(--s1) var(--s5) var(--s5); }
+.tr-concl { padding: var(--s3) var(--s4); }
+.tr-tbl { padding: var(--s2); }
+.tr-tl { padding: var(--s3) var(--s4); }
+.tr-hd > .g, .tr-hd .c-probes > span { font-size: 12px; }
+/* In a hop row only the status mark is red, as in the summary: the loss number has no second mark */
+.tr-row .c-loss .mk { display: none; }
+/* Hop timeline: the sizes of the timeline card (jitter 14 px, the chart well rounded by 8 px) */
+.tr-tl .tl-well.tl-jit { height: 14px; border-radius: 4px; }
+.tr-tl .tl-well.tl-chart, .tr-tl .tl-well.tl-dest { border-radius: var(--radius-ctl); }
+/* Axis labels of the hop timeline: the span:first-child / span:last-child rules of trace.css also hit the nested text,
+   so every label moved left by its own width («15:50» hung left of the chart). As on the timelines of the main
+   screen: the first label from the start of the chart, the last up to its end, the others centred on their tick;
+   the top and the bottom of the ms scale inside the well. */
+.tr-tl .tl-x > span { transform: translateX(-50%); }
+.tr-tl .tl-x > span:first-child { transform: none; }
+.tr-tl .tl-x > span:last-child { transform: translateX(-100%); }
+.tr-tl .tl-x > span > span, .tr-tl .tl-gl > span > span { position: static; transform: none; }

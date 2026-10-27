@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-en="All targets, Whilo Trace">Все цели, Whilo Trace</title>
+<link rel="icon" href="base/icon.png">
+<link rel="stylesheet" href="base/tokens.css">
+<link rel="stylesheet" href="base/base.css">
+<link rel="stylesheet" href="parts/header/header.css">
+<link rel="stylesheet" href="parts/summary/summary.css">
+<link rel="stylesheet" href="parts/timeline/timeline.css">
+<link rel="stylesheet" href="parts/history/he.css">
+<link rel="stylesheet" href="screens/app.css">
+<script src="base/theme.js"></script>
+<script src="base/wt.js"></script>
+<script src="base/mock.js"></script>
+<script src="base/api.js"></script>
+<script src="base/live.js"></script>
+</head>
+<body class="scr-app">
+<!-- The «All targets» screen. screens/main.js mounts the parts once the first snapshot is in (base/live.js). -->
+<div class="app" id="app">
+  <div id="hdr"></div>
+  <div class="app-past" id="past" hidden></div>
+  <div class="app-body" id="body">
+    <main class="app-scroll" id="scroll">
+      <section id="sum"></section>
+      <section id="stack"></section>
+    </main>
+  </div>
+  <footer class="app-foot" id="foot">
+    <div id="hist"></div>
+    <div id="status"></div>
+  </footer>
+</div>
+<div class="scr-modal" id="modal" hidden></div>
+<script src="parts/header/header.js"></script>
+<script src="parts/summary/summary.js"></script>
+<script src="parts/timeline/timeline.js"></script>
+<script src="parts/history/he.js"></script>
+<script src="screens/main.js"></script>
+</body>
+</html>
