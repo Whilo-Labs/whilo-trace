@@ -1,4 +1,4 @@
-"""Draws the Whilo Trace icon (a path of hops) and writes the PNG and ICO files Tauri needs.
+"""Draws the Whilo Trace icon (a path of hops) and writes the PNG, ICO and ICNS files Tauri needs.
 
 Usage: python tools/make_icons.py app/icons
 Pure standard library, so it runs anywhere.
@@ -90,14 +90,24 @@ def ico(images):
     return header + entries + blobs
 
 
+def icns(images):
+    """Apple icon file with PNG payloads: 128, 256, 512 and 1024 px (ic07, ic08, ic09, ic10)."""
+    kinds = {128: b"ic07", 256: b"ic08", 512: b"ic09", 1024: b"ic10"}
+    body = b"".join(kinds[s] + struct.pack(">I", len(d) + 8) + d for s, d in images if s in kinds)
+    return b"icns" + struct.pack(">I", len(body) + 8) + body
+
+
 def main():
     out = Path(sys.argv[1] if len(sys.argv) > 1 else "app/icons")
     out.mkdir(parents=True, exist_ok=True)
     pngs = {s: png(s, render(s, 4 if s >= 64 else 6)) for s in (16, 24, 32, 48, 64, 128, 256)}
+    # Large sizes for macOS: two samples per axis are enough there and keep the run short.
+    pngs.update({s: png(s, render(s, 2)) for s in (512, 1024)})
     (out / "32x32.png").write_bytes(pngs[32])
     (out / "128x128.png").write_bytes(pngs[128])
     (out / "icon.png").write_bytes(pngs[256])
     (out / "icon.ico").write_bytes(ico([(s, pngs[s]) for s in (16, 24, 32, 48, 64, 256)]))
+    (out / "icon.icns").write_bytes(icns([(s, pngs[s]) for s in (128, 256, 512, 1024)]))
     print("icons written to", out)
 
 
