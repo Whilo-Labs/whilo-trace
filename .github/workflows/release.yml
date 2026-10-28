@@ -129,4 +129,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -la dist
-          gh release create "$GITHUB_REF_NAME" dist/* --draft --title "Whilo Trace ${GITHUB_REF_NAME#v}" --notes-file .github/release-notes.md
+          # A second run for the same tag replaces the files instead of failing.
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --draft --title "Whilo Trace ${GITHUB_REF_NAME#v}" --notes-file .github/release-notes.md
+          fi

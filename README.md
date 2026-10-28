@@ -1,23 +1,15 @@
-<div align="center">
-
-<img src="app/icons/icon.png" width="88" height="88" alt="">
-
-# Whilo Trace
-
-**See where packets get lost on the way to the hosts you care about.**
-
-Per-hop loss and latency for several hosts at once, a timeline from 5 minutes to 24 hours,<br>
-local history and a report you can send to your ISP.
+# <img src="app/icons/icon.png" width="32" height="32" alt=""> Whilo Trace
 
 [![CI](https://github.com/Whilo-Labs/whilo-trace/actions/workflows/ci.yml/badge.svg)](https://github.com/Whilo-Labs/whilo-trace/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Whilo-Labs/whilo-trace?include_prereleases&label=release)](https://github.com/Whilo-Labs/whilo-trace/releases)
+[![Release build](https://github.com/Whilo-Labs/whilo-trace/actions/workflows/release.yml/badge.svg)](https://github.com/Whilo-Labs/whilo-trace/actions/workflows/release.yml)
+[![Version](https://img.shields.io/github/v/release/Whilo-Labs/whilo-trace?label=version)](https://github.com/Whilo-Labs/whilo-trace/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Whilo-Labs/whilo-trace/total)](https://github.com/Whilo-Labs/whilo-trace/releases)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-555)
-![Built with](https://img.shields.io/badge/built%20with-Rust%20%2B%20Tauri%202-orange)
+
+> See where packets get lost on the way to the hosts you care about: per-hop loss and latency for several hosts at once, a timeline from 5 minutes to 24 hours, local history and a report for your ISP.
 
 [Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [How it works](#how-it-works) · [Build](#build-from-source) · [FAQ](#faq)
-
-</div>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/main-dark.png">
