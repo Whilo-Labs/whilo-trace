@@ -166,14 +166,16 @@
     WT.probesAvailable = s.probesAvailable || ['icmp'];
     WT.ratePps = s.ratePps || 0;
     WT.recent = s.recent || [];
+    // Places database of the route map (state, month, source, download); the trace carries home and hops[].geo.
+    WT.geo = s.geo || null;
   }
 
   var WT = window.WT = {
     N: 120, rng: rng, series: series, sample: sample, LOSS: [],
     probes: probes, targets: [], trace: null, statuses: statuses,
     ticks: {}, windows: windows, windowSeconds: WINDOW_S, intervals: intervals, history24h: [], history: null,
-    nowMs: 0, fromMs: 0, toMs: 0, live: true, bucketMs: 5000, ratePps: 0, recent: [],
-    settings: { warnMs: 100, badMs: 200, theme: 'system', lang: 'ru', window: '10m' },
+    nowMs: 0, fromMs: 0, toMs: 0, live: true, bucketMs: 5000, ratePps: 0, recent: [], geo: null,
+    settings: { warnMs: 100, badMs: 200, theme: 'system', lang: 'ru', window: '10m', geoCheck: true, home: null },
     probesAvailable: ['icmp'],
     path: { line: line, bars: bars, zone: zone, jitter: jitter, hatch: hatch },
     stats: stats, fmt: fmt, apply: apply, ticksAt: ticksAt,

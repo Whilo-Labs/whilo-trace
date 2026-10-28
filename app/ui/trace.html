@@ -9,6 +9,7 @@
 <link rel="stylesheet" href="base/base.css">
 <link rel="stylesheet" href="parts/trace/trace.css">
 <link rel="stylesheet" href="parts/history/he.css">
+<link rel="stylesheet" href="parts/map/map.css">
 <link rel="stylesheet" href="screens/app.css">
 <script src="base/theme.js"></script>
 <script src="base/wt.js"></script>
@@ -20,6 +21,14 @@
 <!-- Target trace screen: trace.html?id=<row id>[&hop=<ttl>], built by screens/trace.js. -->
 <div id="trace"></div>
 <div class="scr-modal" id="modal" hidden></div>
+<script src="vendor/d3-array.min.js"></script>
+<script src="vendor/d3-geo.min.js"></script>
+<script src="vendor/topojson-client.min.js"></script>
+<script src="vendor/land-110m.js"></script>
+<script src="vendor/countries.js"></script>
+<script src="parts/map/map-geo.js"></script>
+<script src="parts/map/map.js"></script>
+<script src="parts/map/map-dialog.js"></script>
 <script src="parts/trace/trace.js"></script>
 <script src="parts/history/he.js"></script>
 <script src="screens/trace.js"></script>

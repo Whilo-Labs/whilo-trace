@@ -162,6 +162,7 @@ svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor;
 .wth-num input:focus { outline: none; }
 .wth-num:focus-within { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .wth-hint { margin: 0; font-size: 12px; line-height: 1.45; color: var(--text); }
+.wth-hint.wth-credit { color: var(--muted); } /* «База мест»: the credit line of the data sources */
 .wth-side .seg button:hover { color: var(--title); }
 .wth-side .seg button:focus { outline: none; }
 .wth-side .seg button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }

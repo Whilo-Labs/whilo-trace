@@ -1,6 +1,7 @@
 // Whilo Trace, screen «Трасса цели»: the trace part (TR) on live data, the report dialog of the history part (HE) over it.
-// Address: trace.html?id=<row id>[&hop=<ttl>]. Without id the first target opens; a pinned hop row opens its target
-// at that hop. ?mock=, ?theme= and ?lang= are kept on the way back to «Все цели».
+// Address: trace.html?id=<row id>[&hop=<ttl>][&view=map]. Without id the first target opens; a pinned hop row opens its
+// target at that hop; view=map shows the route map (parts/map, MAP) in the hop card. ?mock=, ?theme= and ?lang= are kept
+// on the way back to «Все цели».
 // The part sends actions here; this file calls API and Live (docs/ui-contract.md) and feeds the part new data.
 (function () {
   'use strict';
@@ -11,6 +12,7 @@
   var FIRST_MS = 10000;  // the first snapshot has not come back by then: say so instead of loading on
   var NOTE_MS = 10000;   // how long the text of a failed action stays
   var down = false, retry = null, noteTimer = null, started = false, loaded = false;
+  var mode = Q.get('view') === 'map' ? 'map' : 'table', geoAsked = false; // hop card view; the places check runs once
   if (!(hop >= 1)) hop = null;
   function noop() {}
 
@@ -24,7 +26,7 @@
   function byId(x) { return WT.targets.filter(function (t) { return t.id === x; })[0] || null; }
   // The address follows the shown target and hop, so a reload opens the same view.
   function setAddress() {
-    try { history.replaceState(null, '', 'trace.html' + keep({ id: id, hop: hop })); } catch (e) { /* no history here */ }
+    try { history.replaceState(null, '', 'trace.html' + keep({ id: id, hop: hop, view: mode === 'map' ? 'map' : null })); } catch (e) { /* no history here */ }
   }
 
   // No snapshot from the core: the part says so calmly (over the data on screen, if there is any) and the
@@ -91,12 +93,49 @@
     sync();
   }
 
+  /* ---------- route map in the hop card (parts/map) ---------- */
+  // The map lives in the card's host while the card shows «Карта» and gets the screen's model on every redraw of the
+  // part (it redraws only what changed). A click on the map picks the hop as a click on its row.
+  function showMap() {
+    if (!window.MAP || !view) return;
+    var host = el.querySelector('.mp-host');
+    MAP.attach(host);
+    if (!host) return;
+    var m = view.model();
+    MAP.update({ m: m, geo: WT.geo || null, home: m.kind === 'trace' && WT.trace ? WT.trace.home || null : null, full: !!view.st.full });
+  }
+  // «Дом здесь» / «Сбросить дом» on the map: the home point is a setting ({lat, lon} rounded to 0.1 degree, or null).
+  function setHome(h) { act('set_settings', { settings: { home: h } }).catch(noop); }
+  // «Во весь экран»: the part pins the card over the window; in the app the window goes full screen too where allowed.
+  function fullScreen(on) {
+    try {
+      var w = window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow();
+      if (w && w.setFullscreen) w.setFullscreen(!!on).catch(noop);
+    } catch (e) { /* no window API here */ }
+  }
+  // A newer places database: asked once per page load when the map is first shown (the core sends at most one answered
+  // request a day and says why it did not ask); only an offer opens the dialog.
+  function checkGeo() {
+    if (geoAsked || !window.MAPD || (WT.settings && WT.settings.geoCheck === false)) return;
+    geoAsked = true;
+    API.call('geo_check').then(function (res) {
+      if (res && res.reason === 'offer' && res.offer) MAPD.open(modal, { offer: res.offer, missing: !!(WT.geo && (WT.geo.state === 'missing' || WT.geo.state === 'unreadable')) });
+    }, function (err) { console.error('geo_check failed', err); });
+  }
+
   function start() {
     if (started) return;
     started = true;
     resolve();
+    if (window.MAP) MAP.init({ onSelect: function (ttl) { if (view) view.select(ttl); }, onHome: setHome });
     view = TR.mount(el, {
       id: id, win: Live.state.window, selected: hop, loading: true, down: down,
+      view: mode, animPaused: !!(window.MAP && MAP.paused()), picture: !!(window.MAP && MAP.picture),
+      onView: function (v) { mode = v; setAddress(); if (v === 'map') checkGeo(); },
+      onAnim: function (paused) { if (window.MAP) MAP.setPaused(paused); },
+      onFull: fullScreen,
+      onPicture: function () { if (window.MAP && MAP.picture) MAP.picture(modal); },
+      onRender: showMap,
       onBack: function () { location.href = 'index.html' + keep(); },
       onReport: openReport,
       onWindow: function (w) {
@@ -114,7 +153,14 @@
     if (id !== Q.get('id')) setAddress();
     Live.onData(onData);
     sync();
+    showMap();
+    if (mode === 'map') checkGeo();
   }
+  // Rounds of the traced target drive the map's packet.
+  API.on('round', function (tid) {
+    var r = id ? byId(id) : null;
+    if (window.MAP && r && tid === r.targetId) MAP.round(tid);
+  });
   Live.ready.then(start, function () { start(); lost(); });
   // The first snapshot may not come back at all: the calm message instead of an endless loading screen.
   setTimeout(function () { if (!Live.shown) { start(); lost(); } }, FIRST_MS);

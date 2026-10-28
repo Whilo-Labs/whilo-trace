@@ -229,7 +229,49 @@
       [['ru', 'Русский'], ['en', 'English']].map(function (l) {
         return '<button type="button" data-lang-set="' + l[0] + '" aria-pressed="' + (lang === l[0]) + '">' + T(l[1], l[1]) + '</button>';
       }).join('') + '</div></div>';
+    h += geoBlock();
     return h + '</div>';
+  }
+
+  // ---------- Places database of the route map (WT.geo, settings.geoCheck) ----------
+  var MONTHS = [['январь', 'January'], ['февраль', 'February'], ['март', 'March'], ['апрель', 'April'], ['май', 'May'], ['июнь', 'June'],
+    ['июль', 'July'], ['август', 'August'], ['сентябрь', 'September'], ['октябрь', 'October'], ['ноябрь', 'November'], ['декабрь', 'December']];
+  function monthOf(s) { var x = /^(\d{4})-(\d{2})$/.exec(s || ''), k = x ? +x[2] - 1 : -1; return MONTHS[k] ? { ru: MONTHS[k][0] + ' ' + x[1], en: MONTHS[k][1] + ' ' + x[1] } : null; }
+  // «встроенная, октябрь 2026» / «скачанная, ноябрь 2026» / «нет» / «не читается» / «имитация», and a download on its way.
+  function geoLine() {
+    var g = WT.geo, d = g && g.download, mo = g && monthOf(g.month), t;
+    if (!g || g.state === 'missing') t = { ru: 'нет', en: 'none' };
+    else if (g.state === 'unreadable') t = { ru: 'не читается', en: 'cannot be read' };
+    else if (g.state === 'simulated') t = { ru: 'имитация', en: 'simulated' };
+    else t = g.source === 'downloaded' ? { ru: 'скачанная', en: 'downloaded' } : { ru: 'встроенная', en: 'built in' };
+    if (mo && g.state === 'ok') t = { ru: t.ru + ', ' + mo.ru, en: t.en + ', ' + mo.en };
+    if (d && d.state === 'running') {
+      var pct = d.total ? Math.round((d.received || 0) / d.total * 100) + (isEn() ? '%' : ' %') : '', dm = monthOf(d.month) || { ru: '', en: '' };
+      t = { ru: t.ru + '; скачивается ' + dm.ru + (pct ? ': ' + pct : ''), en: t.en + '; downloading ' + dm.en + (pct ? ': ' + pct : '') };
+    }
+    return { ru: 'Сейчас: ' + t.ru, en: 'In use: ' + t.en };
+  }
+  function geoBlock() {
+    var on = settings().geoCheck !== false, line = geoLine(), dl = !!(WT.geo && WT.geo.source === 'downloaded');
+    return '<div class="wth-set" data-geo-set><div class="wth-set-label">' + T('База мест', 'Places database') + '</div>' +
+      '<p class="wth-hint">' + T('Проверять новую базу мест', 'Check for a new places database') + '</p>' +
+      '<div class="seg" role="group"' + A('aria-label', 'Проверять новую базу мест', 'Check for a new places database') + '>' +
+      '<button type="button" data-geo-check="on" aria-pressed="' + on + '">' + T('Вкл', 'On') + '</button>' +
+      '<button type="button" data-geo-check="off" aria-pressed="' + !on + '">' + T('Выкл', 'Off') + '</button></div>' +
+      '<p class="wth-hint" data-geo-line data-en="' + esc(line.en) + '">' + esc(L(line.ru, line.en)) + '</p>' +
+      '<button type="button" class="btn btn-sm" data-geo-remove' + (dl ? '' : ' hidden') + '>' + T('Удалить скачанную', 'Remove downloaded') + '</button>' +
+      '<p class="wth-hint wth-credit">' + T('IP Geolocation by DB-IP (db-ip.com), CC BY 4.0; суша: Natural Earth', 'IP Geolocation by DB-IP (db-ip.com), CC BY 4.0; land: Natural Earth') + '</p></div>';
+  }
+  function syncGeo(p) {
+    markPressed('data-geo-check', settings().geoCheck === false ? 'off' : 'on');
+    var line = geoLine(), el = $('[data-geo-line]', p), rm = $('[data-geo-remove]', p), dl = !!(WT.geo && WT.geo.source === 'downloaded');
+    if (el && el.textContent !== L(line.ru, line.en)) { el.textContent = L(line.ru, line.en); el.setAttribute('data-en', line.en); }
+    if (rm && rm.hidden === dl) rm.hidden = !dl;
+  }
+  // «Удалить скачанную»: back to the database that comes with the program; the next snapshot shows it.
+  function removeGeo(b) {
+    b.disabled = true;
+    call('geo_remove').then(function () { b.disabled = false; }, function (err) { console.error('geo_remove failed', err); b.disabled = false; });
   }
 
   // ---------- Whole header ----------
@@ -594,6 +636,7 @@
     }
     markPressed('data-theme-set', curTheme());
     markPressed('data-lang-set', curLang());
+    syncGeo(p);
   }
   function update() {
     if (!$('.wth') && !panel()) return;
@@ -626,6 +669,11 @@
       else if (b.dataset.langSet !== curLang()) { markPressed('data-lang-set', b.dataset.langSet); keepOpenOnReload(); }
     }
     else if ((b = t.closest('[data-theme-set]'))) { if (e.cancelBubble) markPressed('data-theme-set', b.dataset.themeSet); else setTheme(b.dataset.themeSet); }
+    else if ((b = t.closest('[data-geo-check]'))) {
+      var on = b.dataset.geoCheck === 'on';
+      markPressed('data-geo-check', on ? 'on' : 'off');
+      if (on !== (settings().geoCheck !== false)) saveSettings({ geoCheck: on });
+    } else if ((b = t.closest('[data-geo-remove]'))) { if (!b.disabled) removeGeo(b); }
     else if ((b = t.closest('.wth-add-btn'))) add().then(null, noop); // the error is under the field
   }
 

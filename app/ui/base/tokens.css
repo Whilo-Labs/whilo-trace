@@ -42,6 +42,8 @@
   --line-2: #1A9A5C;        /* second latency line, only for the «overlay» variant */
   --row-h: 40px;            /* table row (summary, hops) */
   --row-h-compact: 32px;    /* row with 10 or more targets */
+  --packet: var(--title);   /* route map: head of the packet (white would vanish on the light well) */
+  --hatch: #767676;         /* route map: hatching of a hop that does not answer (4.0:1 on --well) */
   color-scheme: light;
 }
 
@@ -54,6 +56,7 @@
     --silent: #5E5E5E; --grid: #303030; --range: #24719F; --focus-ring: #0E95D2;
     --tip: var(--control); --on-tip: var(--title); --float: var(--control); --float-hover: var(--control-hover);
     --scrim: rgba(0, 0, 0, 0.8); --period: var(--selected); --accent-hover: #0060C9; --partial-text: #FF9D14; --line-2: #21A366;
+    --packet: #FFFFFF; --hatch: #7A7A7A;
     color-scheme: dark;
   }
 }
@@ -66,5 +69,6 @@
   --silent: #5E5E5E; --grid: #303030; --range: #24719F; --focus-ring: #0E95D2;
   --tip: var(--control); --on-tip: var(--title); --float: var(--control); --float-hover: var(--control-hover);
   --scrim: rgba(0, 0, 0, 0.8); --period: var(--selected); --accent-hover: #0060C9; --partial-text: #FF9D14; --line-2: #21A366;
+  --packet: #FFFFFF; --hatch: #7A7A7A;
   color-scheme: dark;
 }

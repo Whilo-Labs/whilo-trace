@@ -13,8 +13,8 @@
   var subs = [], errSubs = [], pending = null, pendingGen = -1, queued = null, last = 0, timer = null, gen = 0;
   // The saved window applies once: from get_settings, or from the first snapshot when the core came up later.
   var settingsSeen = false, windowTouched = false;
-  var CHANGES = { add_target: 1, remove_target: 1, set_paused: 1, set_interval: 1, pin_hop: 1, unpin_hop: 1, set_settings: 1 };
-  var READS = { snapshot: 1, get_settings: 1, recent_inputs: 1, pick_folder: 1, open_folder: 1, export_report: 1 };
+  var CHANGES = { add_target: 1, remove_target: 1, set_paused: 1, set_interval: 1, pin_hop: 1, unpin_hop: 1, set_settings: 1, geo_download: 1, geo_remove: 1 };
+  var READS = { snapshot: 1, get_settings: 1, recent_inputs: 1, pick_folder: 1, open_folder: 1, export_report: 1, geo_check: 1 };
   function noop() {}
 
   // The trace screen opens on trace.html?id=<row id>: its first snapshot already carries the trace.

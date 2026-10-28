@@ -1,0 +1,156 @@
+/* Whilo Trace, part "route map" (parts/map) on the trace screen: the hop card's head (it belongs to the trace part but
+   exists only with the map), the map stage, the side column and the «new places database» dialog.
+   Layout and look of the approved mockup C «Телеметрия». Variables from base/tokens.css only; flat: fills, no borders,
+   shadows or gradients. Loaded before screens/app.css. */
+
+/* Text on a --line fill and the lost cell of the ribbon: white in the light theme (--well on --line is 4.3:1 there,
+   white 4.8:1; white on --loss-text 5.8:1), --well in the dark one (white on --line is 3.4:1 there). */
+:root, [data-theme="light"] { --mp-on-line: var(--on-accent); --mp-lost: var(--loss-text); --mp-on-lost: var(--on-accent); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --mp-on-line: var(--well); --mp-lost: var(--loss); --mp-on-lost: var(--well); }
+}
+[data-theme="dark"] { --mp-on-line: var(--well); --mp-lost: var(--loss); --mp-on-lost: var(--well); }
+
+/* ---------- hop card: head with «Таблица / Карта» and, for the map, animation, picture, full screen ---------- */
+.tr-hc-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s3); padding: var(--s3) var(--s3) var(--s2); }
+.tr-hc-head .seg { background: var(--well); }
+.tr-hc-sp { flex: 1 1 auto; }
+.tr-hc > .tr-tbl { padding-top: 0; }
+/* Full screen: the card covers the window, always dark (data-theme on the card) */
+.tr-hc.is-full { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; border-radius: 0; background: var(--layer); color: var(--text); }
+.tr-hc.is-full > .mp-host { flex: 1 1 auto; min-height: 0; }
+.tr-hc.is-full .mp-stage { height: 100%; }
+
+/* ---------- stage: the map well on the left, the side column on the right (448 px; 340 px below about 1100 px of
+   card width; under the map below 820 px). The card stays about clamp(420px, 100vh - 230px, 760px) high. ---------- */
+.mp-host { display: block; container: mp / inline-size; padding: 0 var(--s3) var(--s3); }
+.mp-stage { display: grid; grid-template-columns: minmax(0, 1fr) 448px; height: clamp(354px, calc(100vh - 296px), 694px); }
+.mp-map { position: relative; min-width: 0; min-height: 0; overflow: hidden; border-radius: var(--radius-ctl); background: var(--well); outline: none; }
+.mp-map:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.mp-map canvas { position: absolute; left: 0; top: 0; display: block; }
+.mp-side {
+  min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: var(--s3); padding-left: var(--s4);
+  overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--control-hover) transparent; /* a low window: the column scrolls */
+}
+.mp-side .mono { font-family: "Cascadia Mono", ui-monospace, Consolas, Menlo, "DejaVu Sans Mono", monospace; font-variant-numeric: tabular-nums; }
+
+/* empty map: why there are no places */
+.mp-empty { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; padding: var(--s5); text-align: center; }
+.mp-empty[hidden] { display: none; }
+.mp-empty h3 { font-size: 16px; }
+.mp-empty p { max-width: 460px; margin: var(--s2) 0 0; font-size: 13px; line-height: 1.45; color: var(--text); }
+
+/* right-click menu on the map: «Дом здесь» / «Сбросить дом» */
+.mp-menu { position: absolute; z-index: 4; display: grid; gap: 2px; min-width: 220px; padding: 4px; border-radius: var(--radius-ctl); background: var(--float); }
+.mp-menu[hidden] { display: none; }
+.mp-menu button {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s3); height: 32px; padding: 0 10px; border: 0; border-radius: 6px;
+  background: transparent; color: var(--title); font: inherit; font-size: 13px; text-align: left; white-space: nowrap; cursor: pointer;
+}
+.mp-menu button:hover, .mp-menu button:focus-visible { background: var(--float-hover); outline: none; }
+.mp-menu .aside { font-size: 12px; color: var(--text); font-family: "Cascadia Mono", ui-monospace, Consolas, Menlo, "DejaVu Sans Mono", monospace; }
+
+/* ---------- side column: the selected hop (lies on the card) ---------- */
+.mp-panel { flex: none; display: flex; flex-direction: column; gap: 10px; padding-top: 2px; }
+.mp-ph { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; column-gap: var(--s3); }
+.mp-ttl {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 30px; height: 30px; padding: 0 6px;
+  border-radius: 4px; background: var(--line); color: var(--mp-on-line); font-size: 16px; font-weight: 700;
+}
+.mp-id { min-width: 0; }
+.mp-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--title); font-size: 14px; line-height: 1.3; }
+.mp-addr { color: var(--text); font-size: 13px; line-height: 1.3; }
+.mp-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-size: 13px; font-weight: 600; white-space: nowrap; }
+.mp-state.s-loss { color: var(--loss-text); }
+.mp-state.s-partial { color: var(--partial-text); }
+.mp-state .mk { width: 9px; height: 9px; }
+.mp-read { display: grid; grid-template-columns: 1.05fr 1.15fr 1fr; row-gap: 10px; column-gap: var(--s3); }
+.mp-read > div { display: flex; flex-direction: column; min-width: 0; }
+.mp-k { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; line-height: 16px; }
+.mp-v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--title); font-size: 20px; line-height: 26px; font-weight: 600; }
+.mp-v small { margin-left: 3px; color: var(--text); font-size: 13px; font-weight: 400; }
+.mp-v.t-loss { color: var(--loss-text); }
+.mp-v.t-part { color: var(--partial-text); }
+.mp-s { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 12px; line-height: 16px; }
+.mp-place { color: var(--text); font-size: 12px; line-height: 1.45; }
+.mp-place b { color: var(--title); font-weight: 600; }
+.mp-place .mono { color: var(--muted); font-size: 12px; }
+/* the physics gauge: fibre minimum, the extra, the vacuum tick, the measured value */
+.mp-gauge svg { display: block; overflow: visible; }
+.mp-gauge text { fill: var(--text); font-size: 11px; font-family: "Cascadia Mono", ui-monospace, Consolas, Menlo, "DejaVu Sans Mono", monospace; }
+.mp-gauge .g-k, .mp-gauge .g-x { font-size: 12px; font-family: "Segoe UI", system-ui, -apple-system, sans-serif; }
+.mp-gauge .g-k, .mp-gauge .g-l0 { fill: var(--muted); }
+.mp-gauge .g-x, .mp-gauge .g-lm { fill: var(--title); }
+.mp-gauge .g-fib { fill: var(--hatch); }
+.mp-gauge .g-ext { fill: var(--line); }
+.mp-gauge .g-vac { fill: var(--layer); }
+.mp-gauge .g-tick { fill: var(--muted); }
+.mp-gauge .g-meas.bad { fill: var(--loss); }
+.mp-gauge .g-meas.doubt { fill: var(--partial); }
+.mp-gauge .g-meas.ok { fill: var(--title); } /* at or just under the fibre minimum, within the check's 1 ms tolerance */
+
+/* ---------- side column: the hop ribbon (mtr-like lines in a well) ---------- */
+.mp-rib { flex: 1 1 0; min-height: 170px; display: flex; flex-direction: column; padding: 10px 12px; border-radius: var(--radius-ctl); background: var(--well); }
+.mp-rh { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s2); margin-bottom: 4px; }
+.mp-rh h3 { flex: none; color: var(--title); font-size: 13px; font-weight: 600; }
+.mp-rh span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.mp-rows {
+  position: relative; flex: 1 1 0; min-height: 0; overflow-y: auto; margin: 0 -6px; font-size: 12px; line-height: 22px;
+  font-family: "Cascadia Mono", ui-monospace, Consolas, Menlo, "DejaVu Sans Mono", monospace; font-variant-numeric: tabular-nums;
+  scrollbar-width: thin; scrollbar-color: var(--control-hover) transparent;
+}
+.mp-row {
+  display: grid; grid-template-columns: 3ch 15.5ch 5ch 7ch 3ch minmax(0, 1fr); align-items: center;
+  padding: 0 6px; border-radius: 4px; color: var(--text); white-space: nowrap; cursor: pointer; outline: none;
+}
+.mp-row > * { overflow: hidden; }
+.mp-row.hd { position: sticky; top: 0; z-index: 1; background: var(--well); color: var(--muted); cursor: default; }
+.mp-row .n { text-align: right; padding-right: 1ch; }
+.mp-row .n b { display: inline-block; min-width: 2.4ch; padding: 0 1px; border-radius: 2px; text-align: right; font-weight: 400; }
+.mp-row .r, .mp-row .l { text-align: right; }
+.mp-row .g { display: flex; align-items: center; justify-content: center; }
+.mp-row .s { text-overflow: ellipsis; }
+.mp-row .s-loss { color: var(--loss-text); }
+.mp-row .s-partial { color: var(--partial-text); }
+.mp-row:not(.hd):hover { background: var(--control); }
+.mp-row.sel, .mp-row.sel:hover { background: var(--selected); color: var(--title); }
+.mp-row.sel .s-loss, .mp-row.sel .s-partial { color: var(--title); } /* status text in colour is too weak on --selected: the mark carries it */
+.mp-row:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.mp-row .n b.cur { background: var(--control); color: var(--title); } /* calm: the packet passes hops fast at the start of a round */
+.mp-row .n b.lost { background: var(--mp-lost); color: var(--mp-on-lost); }
+.mp-g { display: block; overflow: hidden; }
+.mp-g .f-loss { fill: var(--loss); }
+.mp-g .f-part { fill: var(--partial); }
+.mp-g .f-mute { fill: var(--muted); }
+.mp-g .s-hatch { fill: none; stroke: var(--hatch); stroke-width: 1.6; }
+
+/* ---------- «new places database» dialog: the report dialog's shell, centred ---------- */
+.scr-modal .ms.mp-ms { display: flex; align-items: center; justify-content: center; }
+.rp.mp-dlg { width: 460px; }
+.mp-dlg .rp-body p { margin: 12px 0 0; color: var(--text); font-size: 14px; line-height: 1.45; }
+.mp-dlg .rp-body .mp-prog-t { margin-top: 6px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.mp-prog { height: 8px; margin-top: 14px; overflow: hidden; border-radius: 4px; background: var(--well); }
+.mp-prog > i { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
+
+/* ---------- narrow card: the side column narrows, then goes under the map (after the rules above: same specificity) ---------- */
+@container mp (max-width: 1099px) {
+  .mp-stage { grid-template-columns: minmax(0, 1fr) 340px; }
+  .mp-read { grid-template-columns: 1fr 1fr; }
+  /* 340 px: the status goes under the name, the ribbon keeps only the status mark (the words are the row's title) */
+  .mp-ph { grid-template-columns: auto minmax(0, 1fr); }
+  .mp-state { grid-column: 2; }
+  .mp-row { grid-template-columns: 3ch 15.5ch 5ch 7ch 3ch; }
+  .mp-row .s { display: none; }
+}
+@container mp (max-width: 819px) {
+  .mp-stage { display: block; height: auto; }
+  .mp-map { height: clamp(320px, calc(100vh - 300px), 640px); }
+  .mp-side { padding: var(--s4) 0 0; overflow: visible; }
+  .mp-rib { flex: none; max-height: 380px; }
+  .mp-rows { flex: 1 1 auto; }
+  /* under the map the column is the card's width again */
+  .mp-ph { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .mp-state { grid-column: auto; }
+  .mp-row { grid-template-columns: 3ch 15.5ch 5ch 7ch 3ch minmax(0, 1fr); }
+  .mp-row .s { display: block; }
+}

@@ -128,6 +128,9 @@
     pinned: '<svg class="ico" width="16" height="16" viewBox="0 0 16 16"' + A + '><rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/><path d="M5.8 8.1l1.5 1.5 3-3.1"/></svg>',
     check: '<svg class="ico" width="14" height="14" viewBox="0 0 14 14"' + A + '><path d="M3 7.2l2.6 2.6L11 4.4"/></svg>',
     range: '<svg class="ico" width="16" height="16" viewBox="0 0 18 18"' + A + '><path d="M3 3v12M15 3v12M3 9h12M6 6.5 3.5 9 6 11.5M12 6.5 14.5 9 12 11.5"/></svg>',
+    full: '<svg class="ico" width="16" height="16" viewBox="0 0 16 16"' + A + '><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10"/></svg>',
+    unfull: '<svg class="ico" width="16" height="16" viewBox="0 0 16 16"' + A + '><path d="M6 2.5V6H2.5M13.5 6H10V2.5M10 13.5V10h3.5M2.5 10H6v3.5"/></svg>',
+    image: '<svg class="ico" width="16" height="16" viewBox="0 0 16 16"' + A + '><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="M2.5 11.5 6 8l2.5 2.5L10.5 8.5l3 3"/><circle cx="10.5" cy="6" r="1"/></svg>',
   };
 
   // ---------- picked period on the charts ----------
@@ -242,6 +245,7 @@
       return {
         ttl: hp.ttl, addr: hp.addr || null, name: hp.name || null, dest: !!hp.dest, status: status,
         src: src, s: s, full: src ? WT.stats(src) : null, by: hp.byProbe || {}, pin: pins[hp.ttl] || null, pinned: !!pins[hp.ttl], origin: false,
+        geo: hp.geo || null, // place of the hop for the route map (parts/map)
       };
     });
     // Where the loss starts: the core marks it for the window; for a picked period the engine rule runs here:
@@ -617,6 +621,26 @@
     return h + '</section>';
   }
 
+  // The hop card: «Таблица / Карта» in its head, then the table or the route map. The map is an empty host that the
+  // screen fills (parts/map); data-keep keeps its children and the attributes set on it through the morph below.
+  // In full screen the card covers the window and is always dark.
+  function hopCard(m, st) {
+    var map = st.view === 'map', full = map && st.full;
+    var h = '<div class="card tr-hc' + (full ? ' is-full' : '') + '" data-k="hc"' + (full ? ' data-theme="dark"' : '') + '>';
+    h += '<div class="tr-hc-head"><div class="seg tr-view" role="group" aria-label="' + esc(L('Вид хопов', 'Hop view')) + '">' +
+      '<button data-view="table" aria-pressed="' + !map + '">' + S('Таблица', 'Table') + '</button>' +
+      '<button data-view="map" aria-pressed="' + map + '">' + S('Карта', 'Map') + '</button></div>';
+    if (map) {
+      h += '<span class="tr-hc-sp"></span>';
+      h += '<button class="btn" data-act="anim">' + (st.animPaused ? ICON.play + S('Анимация', 'Animation') : ICON.pause + S('Пауза анимации', 'Pause animation')) + '</button>';
+      if (st.picture) h += '<button class="btn" data-act="picture">' + ICON.image + S('Сохранить картинку', 'Save picture') + '</button>';
+      h += '<button class="btn" data-act="full">' + (full ? ICON.unfull + S('Выйти из полного экрана', 'Exit full screen') : ICON.full + S('Во весь экран', 'Full screen')) + '</button>';
+    }
+    h += '</div>';
+    h += map ? '<div class="mp-host" data-k="map" data-keep></div>' : table(m);
+    return h + '</div>';
+  }
+
   // ---------- timeline of the selected hop ----------
   // A node that answers only some probes: its missing replies are skipped but the line does not break
   // (at 64 % no reply only lone dots would stay). Loss and empty buckets break it.
@@ -761,9 +785,10 @@
   // data-ttl / data-k; a mismatch replaces the element.
   var tpl = document.createElement('template');
   function keyOf(n) { return n.nodeType === 1 ? n.getAttribute('data-ttl') || n.getAttribute('data-k') : null; }
+  // An element marked data-keep (the map host) keeps its children and the attributes set on it by its owner.
   function syncAttrs(a, b) {
-    var i, at;
-    for (i = a.attributes.length - 1; i >= 0; i--) { at = a.attributes[i].name; if (!b.hasAttribute(at)) a.removeAttribute(at); }
+    var i, at, keep = a.hasAttribute('data-keep');
+    for (i = a.attributes.length - 1; i >= 0; i--) { at = a.attributes[i].name; if (!keep && !b.hasAttribute(at)) a.removeAttribute(at); }
     for (i = 0; i < b.attributes.length; i++) { at = b.attributes[i]; if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value); }
   }
   function same(x, y) { return x.nodeType === y.nodeType && x.nodeName === y.nodeName && keyOf(x) === keyOf(y); }
@@ -778,7 +803,7 @@
       }
       if (!x) a.appendChild(y);
       else if (!same(x, y)) a.replaceChild(y, x);
-      else if (x.nodeType === 1) { syncAttrs(x, y); syncKids(x, y); }
+      else if (x.nodeType === 1) { syncAttrs(x, y); if (!x.hasAttribute('data-keep')) syncKids(x, y); }
       else if (x.nodeValue !== y.nodeValue) x.nodeValue = y.nodeValue;
     }
     while (a.childNodes.length > list.length) a.removeChild(a.lastChild);
@@ -794,12 +819,15 @@
   // ---------- the screen with its behaviour ----------
   // o: id, win, selected (ttl), range, loading, down, note; callbacks onBack, onReport, onWindow(w), onInterval(s),
   // onPause(paused), onProbe(rowId), onPin(ttl, pinnedRowId | null), onRange([fromMs, toMs) | null), onSelect(ttl).
+  // Hop card: view ('table' | 'map'), animPaused, picture (the map can save a picture); callbacks onView(view),
+  // onAnim(paused), onFull(on), onPicture(), and onRender() after every redraw (the screen puts the map in its host).
   function mount(el, o) {
     ensureDefs();
     o = o || {};
     var st = {
       id: o.id || null, win: o.win || '10m', selected: o.selected == null ? null : o.selected, range: o.range || null,
       dataRange: null, menu: false, loading: o.loading !== false, pausedAt: null, down: !!o.down, note: o.note || null,
+      view: o.view === 'map' ? 'map' : 'table', full: false, animPaused: !!o.animPaused, picture: !!o.picture,
     };
     var cur = { kind: 'loading' }, hov = null, drag = null, hlTtl = null, dropTimer = null, escModal = false;
     function emit(name, a, b) { if (typeof o[name] === 'function') o[name](a, b); }
@@ -809,7 +837,7 @@
       if (m.kind === 'none' || m.kind === 'missing' || m.kind === 'wait' || m.kind === 'down') return header(m, st) + '<div class="tr-main">' + emptyCard(m, note) + '</div>';
       if (m.kind === 'loading') return header(m, st) + '<div class="tr-main"></div>';
       m.h = hopOf(m, m.selected) || m.dest || m.hops[m.hops.length - 1];
-      return header(m, st) + '<div class="tr-main">' + conclusions(m, note) + table(m) + timeline(m.h, m) + '</div>';
+      return header(m, st) + '<div class="tr-main">' + conclusions(m, note) + hopCard(m, st) + timeline(m.h, m) + '</div>';
     }
     function render(focusRow) {
       var t = st.id ? byId(st.id) : null;
@@ -834,8 +862,10 @@
       }
       if (drag) dragPaint(); else if (hov != null && m.kind === 'trace') hoverAt(hov); else hoverOff();
       tipRefresh();
+      emit('onRender');
     }
     function setRange(r) { st.range = r; render(); emit('onRange', r); }
+    function setFull(on) { st.full = on; render(); emit('onFull', on); }
 
     // ---------- hop timeline: hover hint and picking a period, as on the main screen timelines ----------
     function wellOf(e) { var w = e.target.closest ? e.target.closest('.tr-tl .tl-well[data-plot]') : null; return w && el.contains(w) ? w : null; }
@@ -931,8 +961,9 @@
       if (b) b.focus();
     }
     // Esc: a drag first (window, capture: before any other Esc handler, as in the summary). Then, once the
-    // others had their turn (window, bubbling), the interval menu, then the picked period. A dialog over the
-    // screen takes Esc itself: it is noted before anyone handles the key, so its Esc does not reach the screen.
+    // others had their turn (window, bubbling), the interval menu, then full screen, then the picked period. A dialog
+    // over the screen takes Esc itself: it is noted before anyone handles the key, so its Esc does not reach the screen.
+    // The map's menu takes Esc itself too (parts/map).
     window.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
       escModal = modalOpen();
@@ -943,10 +974,11 @@
     window.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape' || e.defaultPrevented || escModal) return;
       if (st.menu) { e.preventDefault(); closeMenu(menuFocused()); return; }
+      if (st.full) { e.preventDefault(); setFull(false); return; }
       if (st.range) { e.preventDefault(); setRange(null); }
     });
     el.addEventListener('click', function (e) {
-      var t = e.target.closest('[data-pin],[data-act],[data-win],[data-probe],[data-iv],[data-ttl]');
+      var t = e.target.closest('[data-pin],[data-act],[data-win],[data-probe],[data-iv],[data-ttl],[data-view]');
       if (t && !el.contains(t)) t = null;
       var keepMenu = t && (t.getAttribute('data-act') === 'interval' || t.hasAttribute('data-iv'));
       if (st.menu && !keepMenu) { st.menu = false; render(); }
@@ -961,6 +993,12 @@
         else if (a === 'pause') emit('onPause', !cur.paused);
         else if (a === 'interval') { st.menu = !st.menu; render(); }
         else if (a === 'reset') setRange(null);
+        else if (a === 'anim') { st.animPaused = !st.animPaused; render(); emit('onAnim', st.animPaused); }
+        else if (a === 'full') setFull(!st.full);
+        else if (a === 'picture') emit('onPicture');
+      } else if (t.hasAttribute('data-view')) {
+        var v = t.getAttribute('data-view');
+        if (v !== st.view) { st.view = v; if (v !== 'map' && st.full) { st.full = false; emit('onFull', false); } render(); emit('onView', v); }
       } else if (t.hasAttribute('data-iv')) {
         closeMenu(menuFocused());
         emit('onInterval', +t.getAttribute('data-iv'));
@@ -1006,6 +1044,13 @@
       update: function (patch) { if (patch) Object.assign(st, patch); render(); },
       setRange: setRange,
       model: function () { return cur; },
+      // A hop picked outside the part (a click on the map): as a click on its row.
+      select: function (ttl) {
+        if (cur.kind !== 'trace' || !hopOf(cur, ttl)) return;
+        st.selected = ttl;
+        render();
+        emit('onSelect', ttl);
+      },
     };
   }
 
