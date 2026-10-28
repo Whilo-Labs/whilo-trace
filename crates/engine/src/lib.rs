@@ -17,6 +17,6 @@ pub use monitor::{
 };
 pub use probe::{HopSample, Prober, ReplyKind, RoundSpec};
 pub use stats::{
-    hop_stats, lane, outcome, row_stats, slots, timeline, verdict, Bucket, HopStats, HopStatus,
-    Lane, Outcome, RowStats, Slot, Verdict,
+    hop_stats, hop_stats_toward, lane, lost_past_end, outcome, reached_dest_ttl, row_stats, slots,
+    timeline, verdict, Bucket, HopStats, HopStatus, Lane, Outcome, RowStats, Slot, Verdict,
 };

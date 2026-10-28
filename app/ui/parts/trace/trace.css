@@ -71,7 +71,7 @@
 .mk-ok { background: var(--ok); }
 .mk-loss { background: var(--loss); }
 .mk-partial { background: var(--partial); }
-.mk-noreply { background: var(--muted); }
+.mk-noreply, .mk-unreachable { background: var(--muted); }
 .mk-bg { fill: var(--well); }
 svg.mk { overflow: hidden; }
 .hatch-fill { fill: var(--silent); }

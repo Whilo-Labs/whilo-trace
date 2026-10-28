@@ -4,14 +4,16 @@
 use super::buckets::{Grid, History, LineStats, Pick};
 use super::*;
 use std::time::Instant;
-use whilo_trace_engine::{hop_stats, lane, row_stats, slots, HopStatus};
+use whilo_trace_engine::{
+    hop_stats, hop_stats_toward, lane, reached_dest_ttl, row_stats, slots, HopStatus,
+};
 
 fn ip(last: u8) -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(10, 0, 0, last))
 }
 
-/// Rounds from a pattern per hop, '+' answered and '.' lost; round k starts at `k * step` ms.
-/// The last line is the destination.
+/// Rounds from a pattern per hop, '+' answered, '.' lost and 'u' "destination unreachable";
+/// round k starts at `k * step` ms. The last line is the destination.
 fn rounds(pattern: &[&str], step: i64) -> Vec<RoundRecord> {
     let n = pattern[0].len();
     let path_len = pattern.len() as u8;
@@ -22,8 +24,11 @@ fn rounds(pattern: &[&str], step: i64) -> Vec<RoundRecord> {
                 .enumerate()
                 .map(|(i, p)| {
                     let ttl = i as u8 + 1;
-                    if p.as_bytes()[k] == b'+' {
-                        let kind = if ttl == path_len {
+                    let c = p.as_bytes()[k];
+                    if c == b'+' || c == b'u' {
+                        let kind = if c == b'u' {
+                            ReplyKind::Unreachable
+                        } else if ttl == path_len {
                             ReplyKind::Echo
                         } else {
                             ReplyKind::TimeExceeded
@@ -470,6 +475,193 @@ fn buckets_match_the_engine() {
         }
         assert!(mine.iter().any(|h| h.loss_origin));
     }
+}
+
+/// A round as the monitor keeps it (`whilo_trace_engine::monitor::assemble`): up to the answer
+/// of the destination or of a router that says it is unreachable, else one silent slot after the
+/// last hop that answered.
+fn kept(mut r: RoundRecord) -> RoundRecord {
+    let end = r
+        .hops
+        .iter()
+        .position(|h| matches!(h.kind, ReplyKind::Echo | ReplyKind::Unreachable));
+    let (len, reached) = match end {
+        Some(i) => (r.hops[i].ttl, r.hops[i].kind == ReplyKind::Echo),
+        None => {
+            let probed = r.hops.last().map_or(1, |h| h.ttl);
+            let answered = r
+                .hops
+                .iter()
+                .rev()
+                .find(|h| h.kind.answered())
+                .map_or(0, |h| h.ttl);
+            ((answered + 1).min(probed), false)
+        }
+    };
+    r.hops.truncate(len as usize);
+    r.path_len = len;
+    r.reached = reached;
+    r
+}
+
+/// Rounds that ended before the destination count as lost at every hop from where they ended
+/// to the destination, in the buckets as in the engine.
+#[test]
+fn buckets_match_the_engine_when_rounds_end_early() {
+    // Rounds 3, 8 and 14 end at hop 3, rounds 6 and 17 at hop 4 that says "unreachable", and
+    // in round 12 the router before the destination says so at its TTL.
+    let r: Vec<RoundRecord> = rounds(
+        &[
+            "++++++++++++++++++++",
+            "++++++++++++++++++++",
+            "+++.++++.+++++.+++++",
+            "+++.++u+.+++++.++u++",
+            "+.+.++.+.+++.+.++.++",
+            "+++.++.+.+++u+.++.++",
+        ],
+        1000,
+    )
+    .into_iter()
+    .map(kept)
+    .collect();
+    assert_eq!(r[3].path_len, 3, "the helper cuts as the monitor does");
+    assert_eq!((r[6].path_len, r[6].reached), (4, false));
+    let (b, n) = (1000, 22);
+    let g = Grid::build(&r, b, 0, n);
+    let w = g.window(0, n);
+    let close = |a: Option<f64>, z: Option<f64>| match (a, z) {
+        (Some(a), Some(z)) => (a - z).abs() < 1e-9,
+        (a, z) => a.is_none() && z.is_none(),
+    };
+    // The whole window, a period with rounds that reached the destination, and periods where
+    // no round did: those count toward the destination of the whole window.
+    let periods = [(0usize, n), (4, 12), (3, 4), (12, 13)];
+    for ttl in [None, Some(1), Some(3), Some(4), Some(5), Some(6), Some(7)] {
+        let pick = ttl.map_or(Pick::Dest, Pick::Hop);
+        let mine = w.line(pick);
+        let their_slots = slots(&r, ttl, 0, b * n as i64, n);
+        let theirs = lane(&their_slots);
+        assert_eq!(
+            (&mine.loss, &mine.partial),
+            (&theirs.loss, &theirs.partial),
+            "{pick:?}"
+        );
+        assert_eq!((&mine.lo, &mine.hi), (&theirs.lo, &theirs.hi), "{pick:?}");
+        let sent: Vec<u32> = their_slots.iter().map(|s| s.sent).collect();
+        let lost: Vec<u32> = their_slots.iter().map(|s| s.lost + s.no_reply).collect();
+        assert_eq!((&mine.sent, &mine.lost), (&sent, &lost), "{pick:?}");
+        for (p0, p1) in periods {
+            let s = w.stats(pick, p0..p1);
+            let e = row_stats(&r, ttl, p0 as i64 * b, p1 as i64 * b);
+            let at = format!("{pick:?} {p0}..{p1}");
+            assert_eq!(
+                (s.sent, s.last_lost, s.last),
+                (e.sent, e.last_lost, e.last),
+                "{at}"
+            );
+            assert!((s.loss_pct() - e.loss_pct).abs() < 1e-9, "{at} {s:?} {e:?}");
+            assert!((s.no_reply_pct() - e.no_reply_pct).abs() < 1e-9, "{at}");
+            assert_eq!((s.min, s.max), (e.min, e.max), "{at}");
+            assert!(close(s.avg, e.avg) && close(s.jitter, e.jitter), "{at}");
+        }
+    }
+    let toward = reached_dest_ttl(&r);
+    for (p0, p1) in periods {
+        let in_period: Vec<RoundRecord> = r
+            .iter()
+            .filter(|x| x.ts_ms >= p0 as i64 * b && x.ts_ms < p1 as i64 * b)
+            .cloned()
+            .collect();
+        let (mine, theirs) = (w.hops_in(p0..p1), hop_stats_toward(&in_period, toward));
+        assert_eq!(mine.len(), theirs.len(), "{p0}..{p1}");
+        for (m, t) in mine.iter().zip(&theirs) {
+            assert_eq!(
+                (
+                    m.ttl,
+                    m.status,
+                    m.loss_origin,
+                    m.is_destination,
+                    m.unreachable
+                ),
+                (
+                    t.ttl,
+                    t.status,
+                    t.loss_origin,
+                    t.is_destination,
+                    t.unreachable
+                ),
+                "{p0}..{p1}"
+            );
+            assert_eq!(
+                (m.sent, m.recv, m.addr),
+                (t.sent, t.recv, t.addr),
+                "{p0}..{p1}"
+            );
+        }
+    }
+    // Every hop from 3 on misses the 6 lost rounds of 20 at least, so the loss starts at hop 3.
+    let hops = w.hops();
+    assert_eq!(hops.len(), 6);
+    assert_eq!(
+        (hops[5].sent, hops[5].recv),
+        (20, 14),
+        "loss at the destination row"
+    );
+    assert!(hops[5].is_destination);
+    assert_eq!(hops[3].status, HopStatus::Unreachable);
+    let origin: Vec<u8> = hops
+        .iter()
+        .filter(|h| h.loss_origin)
+        .map(|h| h.ttl)
+        .collect();
+    assert_eq!(origin, vec![3]);
+    let dest = w.stats(Pick::Dest, w.all());
+    let last_hop = w.stats(Pick::Hop(6), w.all());
+    assert_eq!((dest.sent, dest.lost_path), (20, 6));
+    assert_eq!(
+        (last_hop.sent, last_hop.lost_path),
+        (20, 6),
+        "the same rounds as the target"
+    );
+}
+
+/// A router that says the destination is unreachable: the window classifies it as the engine
+/// does, and it is not the destination.
+#[test]
+fn a_router_that_says_unreachable_is_not_the_destination() {
+    let hop = |ttl: u8, kind: ReplyKind| HopSample {
+        ttl,
+        kind,
+        addr: Some(ip(ttl)),
+        rtt_us: Some(1000 * ttl as u32),
+    };
+    let r: Vec<RoundRecord> = (0..10)
+        .map(|k| RoundRecord {
+            ts_ms: k * 1000,
+            probe: ProbeKind::Icmp,
+            dst: ip(9),
+            path_len: 3,
+            reached: false,
+            hops: vec![
+                hop(1, ReplyKind::TimeExceeded),
+                hop(2, ReplyKind::TimeExceeded),
+                hop(3, ReplyKind::Unreachable),
+            ],
+        })
+        .collect();
+    let g = Grid::build(&r, 1000, 0, 12);
+    let w = g.window(0, 12);
+    let (mine, theirs) = (w.hops(), hop_stats(&r));
+    assert_eq!(mine.len(), 3);
+    for (m, t) in mine.iter().zip(&theirs) {
+        assert_eq!(
+            (m.ttl, m.status, m.is_destination, m.unreachable),
+            (t.ttl, t.status, t.is_destination, t.unreachable)
+        );
+    }
+    assert_eq!(mine[2].status, HopStatus::Unreachable);
+    assert!(mine.iter().all(|h| !h.is_destination && !h.loss_origin));
+    assert_eq!(w.stats(Pick::Dest, w.all()).loss_pct(), 100.0);
 }
 
 /// Rounds added one by one give the same buckets as building from all of them.

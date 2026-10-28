@@ -67,8 +67,9 @@
   };
   TRACE.hops.forEach(function (h) { if (!h.series) { h.series = new Array(WT.N).fill(null); h.loss = []; h.partial = []; } });
 
-  // Short path summary that every row carries (the core sends it with each target):
-  // route length, where the loss starts, hops silent for this probe type, hops that answer only some probes.
+  // Short path summary that every row carries (the core sends it with each target): route length, where the
+  // loss starts, hops silent for this probe type, hops that answer only some probes, routers that say the
+  // destination is unreachable.
   function pathOf(probe) {
     var o = TRACE.hops.filter(function (h) { return h.origin; })[0];
     return {
@@ -77,6 +78,9 @@
       silent: TRACE.hops.filter(function (h) { return (h.byProbe[probe] || h.status) === 'silent'; }).map(function (h) { return h.ttl; }),
       partial: TRACE.hops.filter(function (h) { return (h.byProbe[probe] || h.status) === 'partial'; }).map(function (h) {
         return { ttl: h.ttl, addr: h.addr, name: h.name || null, noReplyPct: (h.partial || []).length / WT.N * 100 };
+      }),
+      unreachable: TRACE.hops.filter(function (h) { return (h.byProbe[probe] || h.status) === 'unreachable'; }).map(function (h) {
+        return { ttl: h.ttl, addr: h.addr };
       }),
     };
   }
@@ -127,10 +131,10 @@
       sent: t.sentN ? sum(t.sentN, i0, i1) : n };
   }
   // Status for a picked period by the core's rule for the window: loss from 2 % (LOSS_NOTABLE_PCT), else ok.
-  // A hop that never answers stays silent or without reply; one that answers only some probes stays partial
-  // while the period has such buckets.
+  // Other statuses stay (silent, without reply, says the destination is unreachable); a hop that answers only
+  // some probes stays partial while the period has such buckets.
   function rangeStatus(t, s) {
-    if (t.status === 'silent' || t.status === 'noreply') return t.status;
+    if (t.status !== 'loss' && t.status !== 'ok' && t.status !== 'partial') return t.status;
     if (s.lossPct >= 2) return 'loss';
     return t.status === 'partial' && s.noReplyPct > 0 ? 'partial' : 'ok';
   }

@@ -138,6 +138,12 @@ pub fn status_text(s: HopStatus, lang: &str, probe: ProbeKind) -> String {
         }
         HopStatus::Lossy => pick(ru, "потери", "Loss").into(),
         HopStatus::NoReply => pick(ru, "нет ответа", "No reply").into(),
+        HopStatus::Unreachable => pick(
+            ru,
+            "сообщает, что цель недоступна",
+            "Says the destination is unreachable",
+        )
+        .into(),
     }
 }
 
@@ -154,19 +160,21 @@ fn pick(ru: bool, a: &'static str, b: &'static str) -> &'static str {
 pub fn verdict_lines(v: &Verdict, probe: ProbeKind) -> Vec<String> {
     let p = probe_label(probe);
     let mut lines = Vec::new();
-    match (v.dest_loss_pct, v.dest_ttl) {
-        (None, _) | (_, None) => lines.push("No data yet.".to_string()),
-        (Some(loss), Some(_)) if loss >= 100.0 => lines.push(format!(
+    // Loss to the destination is counted by rounds, so it is known even when no hop row is the
+    // destination (the path ended at a router that says it is unreachable).
+    match v.dest_loss_pct {
+        None => lines.push("No data yet.".to_string()),
+        Some(loss) if loss >= 100.0 => lines.push(format!(
             "The destination did not answer at all in {} rounds.",
             v.rounds
         )),
-        (Some(loss), Some(_)) if loss < LOSS_NOTABLE_PCT => lines.push(format!(
+        Some(loss) if loss < LOSS_NOTABLE_PCT => lines.push(format!(
             "No notable loss to the destination: {:.1}% over {} rounds, average {}.",
             loss,
             v.rounds,
             fmt_ms(v.dest_avg_ms)
         )),
-        (Some(loss), Some(_)) => {
+        Some(loss) => {
             lines.push(format!(
                 "Packet loss to the destination: {:.1}% over {} rounds.",
                 loss, v.rounds
@@ -178,6 +186,14 @@ pub fn verdict_lines(v: &Verdict, probe: ProbeKind) -> Vec<String> {
                 ));
             }
         }
+    }
+    match v.unreachable_hops.as_slice() {
+        [] => {}
+        [one] => lines.push(format!("Hop {one} says the destination is unreachable.")),
+        many => lines.push(format!(
+            "Hops {} say the destination is unreachable.",
+            join(many)
+        )),
     }
     match v.silent_hops.as_slice() {
         [] => {}
@@ -603,7 +619,7 @@ td.num, th.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
 .mono {{ font-family: ui-monospace, Consolas, monospace; }}
 .badge {{ border-radius: 10px; padding: 1px 8px; font-size: 12px; background: #e8f5ee; color: #17663f; }}
 tr.silent td, tr.noreply td {{ color: #8a92a3; }}
-tr.silent .badge, tr.noreply .badge {{ background: #eef0f4; color: #5b6475; }}
+tr.silent .badge, tr.noreply .badge, tr.unreachable .badge {{ background: #eef0f4; color: #5b6475; }}
 tr.limited .badge {{ background: #fff4e0; color: #8a5a00; }}
 tr.loss .badge {{ background: #fdeaea; color: #b42318; }}
 tr.origin td {{ background: #fff5f5; font-weight: 600; }}
@@ -684,6 +700,7 @@ fn hop_rows(r: &Report, lang: &str) -> String {
             HopStatus::RateLimited => "limited",
             HopStatus::Lossy => "loss",
             HopStatus::NoReply => "noreply",
+            HopStatus::Unreachable => "unreachable",
         };
         let mark = if h.loss_origin { " origin" } else { "" };
         let _ = write!(

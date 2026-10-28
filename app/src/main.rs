@@ -534,6 +534,7 @@ fn status_name(s: HopStatus) -> &'static str {
         HopStatus::RateLimited => "partial",
         HopStatus::Silent => "silent",
         HopStatus::NoReply => "noreply",
+        HopStatus::Unreachable => "unreachable",
     }
 }
 
@@ -700,6 +701,14 @@ fn compute(
                 addr: h.addr.map(|a| a.to_string()),
                 name: h.addr.and_then(|a| core.net.dns.name(a)),
                 no_reply_pct: r3(w.stats(Pick::Hop(h.ttl), w.all()).no_reply_pct()),
+            })
+            .collect(),
+        unreachable: hops
+            .iter()
+            .filter(|h| h.status == HopStatus::Unreachable)
+            .map(|h| HopRef {
+                ttl: h.ttl,
+                addr: h.addr.map(|a| a.to_string()),
             })
             .collect(),
     };
@@ -2342,7 +2351,12 @@ mod tests {
                 interval_s: Some(0.5),
             })
         };
-        for host in ["loss.example", "down.example", "8.8.8.8"] {
+        for host in [
+            "loss.example",
+            "down.example",
+            "8.8.8.8",
+            "unreachable.example",
+        ] {
             add(host).unwrap();
         }
         assert_eq!(add("typo.invalid").err().as_deref(), Some("resolve_failed"));
@@ -2382,6 +2396,32 @@ mod tests {
         wait_for(10, "no name for the destination", || {
             core.net.dns.name(dst).as_deref() == Some("loss.example")
         });
+
+        // The trace as the interface gets it. Lost rounds end at hop 7 and count as lost at every
+        // hop from there to the destination, also those lost before it first answered.
+        wait_for(20, "no lost rounds to loss.example", || {
+            rounds("loss.example").iter().filter(|r| !r.reached).count() >= 2
+        });
+        let snapshot = |id: &str| {
+            let mut r = req("10m", None);
+            r.trace = Some(id.into());
+            core.snapshot(&r).unwrap()
+        };
+        let snap = snapshot("t1");
+        let t = snap.trace.unwrap();
+        let origin: Vec<u8> = t.hops.iter().filter(|h| h.origin).map(|h| h.ttl).collect();
+        assert_eq!(origin, [7]);
+        assert_eq!(t.hops.iter().filter(|h| h.dest).count(), 1);
+        // The destination row of the trace counts the rounds the target row counts.
+        let dest = t.hops.iter().find(|h| h.dest).unwrap();
+        let row = snap.targets.iter().find(|r| r.id == "t1").unwrap();
+        assert_eq!(dest.stats.sent, row.stats.sent);
+        assert!((dest.stats.loss_pct - row.stats.loss_pct).abs() < 1e-9);
+        // The router that says the destination is unreachable: the end of the path, not the
+        // destination.
+        let t = snapshot("t4").trace.unwrap();
+        assert_eq!(t.hops.last().unwrap().status, "unreachable");
+        assert!(t.hops.iter().all(|h| !h.dest && !h.origin));
 
         let res = core
             .export(

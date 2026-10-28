@@ -159,7 +159,7 @@
     return WT.statuses[k] ? k : 'ok';
   }
   // Red only for loss: «no reply» and a row error get the neutral grey mark, as in the summary and the trace.
-  var MARK = { ok: 'ok', loss: 'loss', partial: 'partial', silent: 'silent', noreply: 'muted', error: 'muted' };
+  var MARK = { ok: 'ok', loss: 'loss', partial: 'partial', silent: 'silent', noreply: 'muted', unreachable: 'muted', error: 'muted' };
   function mark(k) { return '<i class="mark" style="background:var(--' + (MARK[k] || 'ok') + ')"></i>'; }
 
   /* ---------- row errors: texts from the history part (HE.errorInfo), a short fallback without it ---------- */

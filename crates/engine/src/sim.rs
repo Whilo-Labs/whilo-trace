@@ -490,8 +490,8 @@ fn round_time(spec: &RoundSpec, samples: &[HopSample]) -> Duration {
 mod tests {
     use super::*;
     use crate::monitor::{
-        assemble, spawn_monitor_with, MonitorConfig, MonitorEvent, MonitorOptions, ProberFactory,
-        RoundRecord,
+        assemble, next_path_len, spawn_monitor_with, MonitorConfig, MonitorEvent, MonitorOptions,
+        ProberFactory, RoundRecord,
     };
     use crate::stats::{hop_stats, HopStats, HopStatus};
 
@@ -523,17 +523,20 @@ mod tests {
         (path, hits.iter().map(|&h| h as f64 / n as f64).collect())
     }
 
-    /// The statuses the app derives (`stats::hop_stats`) from 400 rounds to `host`, as the
-    /// monitor reports them.
+    /// The statuses the app derives (`stats::hop_stats`) from 400 rounds to `host`, sent and
+    /// assembled as the monitor does: all 30 TTLs until the destination answers, then up to it.
     fn statuses(host: &str) -> (Path, Vec<HopStats>) {
         let net = SimNet::with(false, 42);
         let dst = net.resolve(host).unwrap();
         let path = Path::to(dst);
         let mut prober = net.prober();
+        let mut known = None;
         let rounds: Vec<RoundRecord> = (0..400)
             .map(|i| {
-                let samples = prober.round(&spec(dst, path.len, 2000)).unwrap();
-                assemble(dst, i * 2500, samples)
+                let samples = prober.round(&spec(dst, known.unwrap_or(30), 2000)).unwrap();
+                let round = assemble(dst, i * 2500, samples);
+                known = next_path_len(known, &round);
+                round
             })
             .collect();
         (path, hop_stats(&rounds))
@@ -692,6 +695,29 @@ mod tests {
 
     #[test]
     fn scenarios_show_the_statuses_they_are_for() {
+        // Loss on the path from hop 7: every hop from there on loses the same rounds.
+        let (path, h) = statuses("loss.example");
+        let origin: Vec<u8> = h.iter().filter(|x| x.loss_origin).map(|x| x.ttl).collect();
+        assert_eq!(origin, [7], "{h:?}");
+        for x in &h {
+            let want = if x.ttl < 7 {
+                HopStatus::Ok
+            } else {
+                HopStatus::Lossy
+            };
+            assert_eq!(x.status, want, "hop {}: {h:?}", x.ttl);
+        }
+        assert!(h[usize::from(path.len) - 1].is_destination);
+
+        // The router that says the destination is unreachable ends the path, and it is not
+        // the destination.
+        let (path, h) = statuses("unreachable.example");
+        let dead = usize::from(path.dead_after.unwrap());
+        assert_eq!(h.len(), dead + 1);
+        assert_eq!(h[dead].status, HopStatus::Unreachable);
+        assert!(h.iter().all(|x| !x.is_destination && !x.loss_origin));
+        assert!(h[..dead].iter().all(|x| x.status == HopStatus::Ok));
+
         let (path, h) = statuses("limit.example");
         let (hop, _) = path.limit.unwrap();
         for x in &h {

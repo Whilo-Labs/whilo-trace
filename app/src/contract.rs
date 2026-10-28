@@ -85,7 +85,7 @@ pub struct Row {
     pub lost_n: Vec<u32>,
     /// Top of the latency scale in ms.
     pub max: f64,
-    /// "ok", "loss", "partial", "silent" or "noreply".
+    /// "ok", "loss", "partial", "silent", "noreply" or, for a pinned hop, "unreachable".
     pub status: String,
     pub stats: Stats,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,6 +120,8 @@ pub struct PathSummary {
     pub origin: Option<HopRef>,
     pub silent: Vec<u8>,
     pub partial: Vec<PartialHop>,
+    /// Routers that say the destination is unreachable.
+    pub unreachable: Vec<HopRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -154,6 +156,8 @@ pub struct TraceHop {
     pub ttl: u8,
     pub addr: Option<String>,
     pub name: Option<String>,
+    /// As a row's status; "unreachable": the router says the destination is unreachable, and
+    /// the path ends there (that hop is never `dest`).
     pub status: String,
     pub origin: bool,
     pub dest: bool,

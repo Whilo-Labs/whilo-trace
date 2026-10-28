@@ -108,7 +108,8 @@ resumes it, then at its saved interval.
   "rangeStats": { "lossPct": 0, "noReplyPct": 0, "avg": 2.1, "min": 1.9, "max": 2.6, "last": 2.0,
                   "lastLost": false, "jitter": 0.2, "sent": 24, "status": "ok" },
   "path": { "hops": 9, "origin": { "ttl": 7, "addr": "10.200.0.7" }, "silent": [2, 3, 4, 6],
-            "partial": [{ "ttl": 1, "addr": "192.168.0.1", "name": null, "noReplyPct": 61 }] }
+            "partial": [{ "ttl": 1, "addr": "192.168.0.1", "name": null, "noReplyPct": 61 }],
+            "unreachable": [] }
 }
 ```
 
@@ -130,19 +131,27 @@ resumes it, then at its saved interval.
   rounds) and how many of them got no answer (loss on the path and a hop's own misses alike). They give
   the exact "k of n" in hints.
 - `max`: top of the latency scale, ms.
-- `status`: `ok`, `loss`, `partial`, `silent`, `noreply` (names and hints: `WT.statuses`). A target row
-  is `loss` from 2 % lost rounds to the destination, `noreply` when none of its rounds reached it, else
-  `ok`; a pinned hop has the status of its hop in the trace.
+- `status`: `ok`, `loss`, `partial`, `silent`, `noreply`, `unreachable` (names and hints: `WT.statuses`).
+  A target row is `loss` from 2 % lost rounds to the destination, `noreply` when none of its rounds
+  reached it, else `ok`; a pinned hop has the status of its hop in the trace. `unreachable` is a hop that
+  answered "destination unreachable" to at least 2 % of its probes: the path ends at that router, and it
+  is never the destination.
 - `stats`: the whole window. `rangeStats`: the picked period, when `req.range` is set.
 - `stats.sent`, `rangeStats.sent`: rounds of the period that probed the row: for a target every round of
   the period, for a hop the rounds with a probe for its TTL (a round stops at the destination, so a hop
-  past a shorter route has fewer). `lossPct` and `noReplyPct` are shares of `sent`.
+  past a shorter route has fewer). A round that did not reach the destination is kept up to where it
+  ended (one silent hop after the last answer, or a router that answered "destination unreachable"), yet
+  its probes to the hops from there to the destination were sent and got nothing back: it counts as sent
+  and lost on the path at each of them. The destination for this is where the rounds of the period that
+  reached it ended, else those of the whole window; without such rounds a hop counts only the rounds that
+  probed it. `lossPct` and `noReplyPct` are shares of `sent`.
 - `avg`, `min`, `max`, `last`, `jitter`: `null` when nothing answered in the period.
 - `rangeStats.status`: the status over the picked period, by the same rules as `status` applied to the
   rounds of the period only. Only in `rangeStats`: without a period the status is `status`, and the
   interface does not compute its own.
 - `path`: short summary of the route for target rows: route length, the hop where loss starts, hops silent
-  for this probe type, hops that answer only some probes (whole window).
+  for this probe type, hops that answer only some probes, routers that say the destination is unreachable
+  (`unreachable`, as `origin`: ttl and address; whole window).
 
 ### Trace
 
@@ -164,7 +173,9 @@ resumes it, then at its saved interval.
 - Target row: a bucket is in `loss` when at least one round in it did not reach the destination.
 - Hop (pinned row or trace hop): a bucket is in `loss` when the hop did not answer in a round where the
   destination was lost too (loss on the path); it is in `partial` when the hop did not answer while the
-  destination answered. Red is only for loss on the path.
+  destination answered. Red is only for loss on the path. A round that ended before the hop on its way to
+  the destination (see `stats.sent`) is loss on the path there, and so is "destination unreachable" from
+  the router before the destination at the destination's TTL.
 - The latency line goes through replies only (`null` buckets break it).
 - Silent hop: a hop that never answers in the window while a later hop answers is `silent`. Its `series`,
   `lo`, `hi` are all `null`, it has no `loss` or `partial` marks, its `lossPct` and `noReplyPct` are 0

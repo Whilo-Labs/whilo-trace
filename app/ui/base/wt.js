@@ -47,6 +47,9 @@
       hint_en: 'The node does not answer probes of this type, but later hops do: traffic passes through it.' },
     noreply: { ru: 'нет ответа', en: 'No reply', hint_ru: 'Не отвечает ни этот узел, ни узлы дальше.', hint_en: 'Neither this node nor anything after it answers.',
       hint_target_ru: 'Цель не отвечает на пробы.', hint_target_en: 'The target does not answer the probes.' },
+    unreachable: { ru: 'сообщает, что цель недоступна', en: 'Says the destination is unreachable',
+      hint_ru: 'Узел отвечает, что не может доставить пробы до цели: путь к цели на нем обрывается.',
+      hint_en: 'The node answers that it cannot deliver the probes to the destination: the path to it ends here.' },
     origin: { ru: 'потери начинаются здесь', en: 'Loss starts here' },
   };
 

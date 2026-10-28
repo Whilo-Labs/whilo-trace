@@ -1,6 +1,7 @@
 //! Per-hop statistics over a window of rounds, and the timeline series.
 
 use crate::monitor::RoundRecord;
+use crate::probe::{HopSample, ReplyKind};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -21,6 +22,8 @@ pub enum HopStatus {
     Lossy,
     /// Neither this hop nor anything after it answers.
     NoReply,
+    /// Says the destination is unreachable: the path to it ends at this router.
+    Unreachable,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -32,6 +35,8 @@ pub struct HopStats {
     pub other_addrs: usize,
     pub sent: u32,
     pub recv: u32,
+    /// Answers that said the destination is unreachable, counted in `recv`.
+    pub unreachable: u32,
     pub loss_pct: f64,
     pub last_ms: Option<f64>,
     pub avg_ms: Option<f64>,
@@ -54,6 +59,8 @@ pub struct Verdict {
     pub origin_addr: Option<IpAddr>,
     pub silent_hops: Vec<u8>,
     pub rate_limited_hops: Vec<u8>,
+    /// Hops that said the destination is unreachable.
+    pub unreachable_hops: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,33 +77,71 @@ pub struct Bucket {
 struct Acc {
     sent: u32,
     recv: u32,
+    echo: u32,
+    unreachable: u32,
     rtts: Vec<f64>,
     addrs: HashMap<IpAddr, u32>,
     last: Option<Option<f64>>,
 }
 
+/// The latency of an answer. "Destination unreachable" has none: it often comes only after the
+/// router gave up on the destination (an ARP timeout of seconds), not after a round trip.
+fn latency(h: &HopSample) -> Option<f64> {
+    h.rtt_ms().filter(|_| h.kind != ReplyKind::Unreachable)
+}
+
+/// TTL of the destination over `rounds`: where the rounds that reached it ended most often.
+pub fn reached_dest_ttl(rounds: &[RoundRecord]) -> Option<u8> {
+    most_common(rounds.iter().filter(|r| r.reached).map(|r| r.path_len))
+}
+
+/// A round that did not reach the destination keeps no probe past where it ended: one silent
+/// slot after the last hop that answered, or a router that said the destination is
+/// unreachable. Its probes to the hops from there to the destination at `dest` were sent and
+/// got nothing back, so loss on the path counts at every hop it crosses.
+pub fn lost_past_end(r: &RoundRecord, ttl: u8, dest: Option<u8>) -> bool {
+    !r.reached && ttl > r.path_len && dest.is_some_and(|d| ttl <= d)
+}
+
 /// Statistics per TTL over `rounds` (oldest first).
 pub fn hop_stats(rounds: &[RoundRecord]) -> Vec<HopStats> {
-    let Some(max_ttl) = rounds.iter().map(|r| r.path_len).max() else {
+    hop_stats_toward(rounds, None)
+}
+
+/// `hop_stats` over the rounds of a period, with `toward` the destination known from the whole
+/// window when none of these rounds reached it.
+pub fn hop_stats_toward(rounds: &[RoundRecord], toward: Option<u8>) -> Vec<HopStats> {
+    let Some(deepest) = rounds.iter().map(|r| r.path_len).max() else {
         return Vec::new();
     };
-    let dest_ttl = most_common(rounds.iter().map(|r| r.path_len));
+    let reached = reached_dest_ttl(rounds).or(toward);
+    let max_ttl = deepest.max(reached.unwrap_or(0));
+    // Without a round that reached it, the destination is where most rounds ended.
+    let dest_ttl = reached.or_else(|| most_common(rounds.iter().map(|r| r.path_len)));
 
     let mut rows: Vec<HopStats> = (1..=max_ttl)
         .map(|ttl| {
             let mut acc = Acc::default();
             for r in rounds {
-                let Some(h) = r.hop(ttl) else { continue };
+                let Some(h) = r.hop(ttl) else {
+                    if lost_past_end(r, ttl, reached) {
+                        acc.sent += 1;
+                        acc.last = Some(None);
+                    }
+                    continue;
+                };
                 acc.sent += 1;
                 if h.kind.answered() {
                     acc.recv += 1;
+                    acc.echo += u32::from(h.kind == ReplyKind::Echo);
+                    acc.unreachable += u32::from(h.kind == ReplyKind::Unreachable);
                     if let Some(a) = h.addr {
                         *acc.addrs.entry(a).or_default() += 1;
                     }
-                    if let Some(ms) = h.rtt_ms() {
+                    if let Some(ms) = latency(h) {
                         acc.rtts.push(ms);
                     }
-                    acc.last = Some(h.rtt_ms());
+                    acc.last = Some(latency(h));
                 } else {
                     acc.last = Some(None);
                 }
@@ -108,38 +153,45 @@ pub fn hop_stats(rounds: &[RoundRecord]) -> Vec<HopStats> {
     rows
 }
 
-fn finish(ttl: u8, acc: Acc, is_destination: bool) -> HopStats {
+fn finish(ttl: u8, acc: Acc, at_dest: bool) -> HopStats {
+    // A row where only routers answered is not the destination: one that passed the probes on,
+    // or one that said the destination is unreachable.
+    let is_destination = at_dest && (acc.echo > 0 || acc.recv == 0);
+    // At the destination, "unreachable" from the router before it is a lost round.
+    let recv = acc.recv - if is_destination { acc.unreachable } else { 0 };
+    let rtts = acc.rtts;
     let mut addrs: Vec<(IpAddr, u32)> = acc.addrs.into_iter().collect();
     addrs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-    let n = acc.rtts.len();
-    let avg = (n > 0).then(|| acc.rtts.iter().sum::<f64>() / n as f64);
-    let jitter = (n > 1).then(|| {
-        acc.rtts
-            .windows(2)
-            .map(|w| (w[1] - w[0]).abs())
-            .sum::<f64>()
-            / (n - 1) as f64
-    });
+    let n = rtts.len();
+    let avg = (n > 0).then(|| rtts.iter().sum::<f64>() / n as f64);
+    let jitter =
+        (n > 1).then(|| rtts.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>() / (n - 1) as f64);
     HopStats {
         ttl,
         addr: addrs.first().map(|a| a.0),
         other_addrs: addrs.len().saturating_sub(1),
         sent: acc.sent,
-        recv: acc.recv,
+        recv,
+        unreachable: acc.unreachable,
         loss_pct: if acc.sent == 0 {
             0.0
         } else {
-            100.0 * (acc.sent - acc.recv) as f64 / acc.sent as f64
+            100.0 * (acc.sent - recv) as f64 / acc.sent as f64
         },
         last_ms: acc.last.flatten(),
         avg_ms: avg,
-        min_ms: acc.rtts.iter().copied().reduce(f64::min),
-        max_ms: acc.rtts.iter().copied().reduce(f64::max),
+        min_ms: rtts.iter().copied().reduce(f64::min),
+        max_ms: rtts.iter().copied().reduce(f64::max),
         jitter_ms: jitter,
         status: HopStatus::Ok,
         is_destination,
         loss_origin: false,
     }
+}
+
+/// `part` is a notable share of `all`: at least `LOSS_NOTABLE_PCT`.
+fn notable(part: u32, all: u32) -> bool {
+    all > 0 && part as f64 * 100.0 >= LOSS_NOTABLE_PCT * all as f64
 }
 
 /// Tells hops that only drop ICMP aimed at themselves apart from real loss on the path.
@@ -155,7 +207,9 @@ fn classify(rows: &mut [HopStats]) {
                 .filter(|r| r.recv > 0)
                 .map(|r| r.loss_pct)
                 .reduce(f64::min);
-            if row.recv == 0 {
+            if !row.is_destination && notable(row.unreachable, row.sent) {
+                HopStatus::Unreachable
+            } else if row.recv == 0 {
                 if later_alive {
                     HopStatus::Silent
                 } else {
@@ -184,10 +238,15 @@ fn classify(rows: &mut [HopStats]) {
     if rows[dest].status != HopStatus::Lossy {
         return;
     }
+    let dest_loss = rows[dest].loss_pct;
     let mut origin = dest;
     for j in (0..dest).rev() {
         match rows[j].status {
-            HopStatus::Lossy => origin = j,
+            // A router that says the destination is unreachable is where those rounds end.
+            HopStatus::Lossy | HopStatus::Unreachable => origin = j,
+            // A router that limits its own answers and still misses what the destination does
+            // carries that loss too.
+            HopStatus::RateLimited if rows[j].loss_pct >= dest_loss => origin = j,
             HopStatus::Silent => {}
             _ => break,
         }
@@ -202,11 +261,20 @@ fn margin(loss_pct: f64) -> f64 {
 pub fn verdict(rounds: &[RoundRecord], hops: &[HopStats]) -> Verdict {
     let dest = hops.iter().find(|h| h.is_destination);
     let origin = hops.iter().find(|h| h.loss_origin);
+    // Loss to the destination by rounds, as the target row counts it: whatever the hop table
+    // shows, a round that did not reach the destination is lost.
+    let reached: Vec<f64> = rounds
+        .iter()
+        .filter_map(|r| r.destination())
+        .filter_map(|h| h.rtt_ms())
+        .collect();
+    let lost = rounds.iter().filter(|r| !r.reached).count();
     Verdict {
         rounds: rounds.len(),
         dest_ttl: dest.map(|d| d.ttl),
-        dest_loss_pct: dest.map(|d| d.loss_pct),
-        dest_avg_ms: dest.and_then(|d| d.avg_ms),
+        dest_loss_pct: (!rounds.is_empty()).then(|| 100.0 * lost as f64 / rounds.len() as f64),
+        dest_avg_ms: (!reached.is_empty())
+            .then(|| reached.iter().sum::<f64>() / reached.len() as f64),
         origin_ttl: origin.map(|o| o.ttl),
         origin_addr: origin.and_then(|o| o.addr),
         silent_hops: hops
@@ -217,6 +285,11 @@ pub fn verdict(rounds: &[RoundRecord], hops: &[HopStats]) -> Verdict {
         rate_limited_hops: hops
             .iter()
             .filter(|h| h.status == HopStatus::RateLimited)
+            .map(|h| h.ttl)
+            .collect(),
+        unreachable_hops: hops
+            .iter()
+            .filter(|h| h.status == HopStatus::Unreachable)
             .map(|h| h.ttl)
             .collect(),
     }
@@ -233,6 +306,7 @@ pub fn timeline(
 ) -> Vec<Bucket> {
     let buckets = buckets.max(1);
     let span = (to_ms - from_ms).max(1);
+    let toward = toward_in(rounds, from_ms, to_ms);
     let mut acc: Vec<(u32, u32, Vec<f64>)> = vec![(0, 0, Vec::new()); buckets];
     for r in rounds {
         if r.ts_ms < from_ms || r.ts_ms >= to_ms {
@@ -240,21 +314,17 @@ pub fn timeline(
         }
         let i = (((r.ts_ms - from_ms) as i128 * buckets as i128) / span as i128) as usize;
         let slot = &mut acc[i.min(buckets - 1)];
-        let sample = match ttl {
-            None => Some(r.destination()),
-            Some(t) => r.hop(t).map(|h| h.kind.answered().then_some(h)),
-        };
-        match sample {
+        match outcome(r, ttl, toward) {
             None => {}
-            Some(None) => {
+            Some(Outcome::Reply(ms)) => {
                 slot.0 += 1;
-                slot.1 += 1;
-            }
-            Some(Some(h)) => {
-                slot.0 += 1;
-                if let Some(ms) = h.rtt_ms() {
+                if let Some(ms) = ms {
                     slot.2.push(ms);
                 }
+            }
+            Some(Outcome::Lost | Outcome::NoReply) => {
+                slot.0 += 1;
+                slot.1 += 1;
             }
         }
     }
@@ -284,17 +354,23 @@ pub enum Outcome {
     NoReply,
 }
 
-/// `None` when the round did not probe that hop (the path was shorter then).
-pub fn outcome(round: &RoundRecord, ttl: Option<u8>) -> Option<Outcome> {
+/// `None` when the round did not probe that hop (the path was shorter then). `toward`: the
+/// destination known from the rounds around, for `lost_past_end`.
+pub fn outcome(round: &RoundRecord, ttl: Option<u8>, toward: Option<u8>) -> Option<Outcome> {
     let Some(ttl) = ttl else {
         return Some(match round.destination() {
             Some(h) => Outcome::Reply(h.rtt_ms()),
             None => Outcome::Lost,
         });
     };
-    let h = round.hop(ttl)?;
-    Some(if h.kind.answered() {
-        Outcome::Reply(h.rtt_ms())
+    let Some(h) = round.hop(ttl) else {
+        return lost_past_end(round, ttl, toward).then_some(Outcome::Lost);
+    };
+    Some(if h.kind == ReplyKind::Unreachable && Some(ttl) == toward {
+        // At the destination, "unreachable" from the router before it is a lost round.
+        Outcome::Lost
+    } else if h.kind.answered() {
+        Outcome::Reply(latency(h))
     } else if round.reached {
         Outcome::NoReply
     } else {
@@ -328,12 +404,13 @@ pub fn slots(
 ) -> Vec<Slot> {
     let n = n.max(1);
     let span = (to_ms - from_ms).max(1);
+    let toward = toward_in(rounds, from_ms, to_ms);
     let mut acc: Vec<(Slot, f64, u32)> = vec![(Slot::default(), 0.0, 0); n];
     for r in rounds {
         if r.ts_ms < from_ms || r.ts_ms >= to_ms {
             continue;
         }
-        let Some(outcome) = outcome(r, ttl) else {
+        let Some(outcome) = outcome(r, ttl, toward) else {
             continue;
         };
         let i = (((r.ts_ms - from_ms) as i128 * n as i128) / span as i128) as usize;
@@ -415,11 +492,12 @@ pub fn row_stats(rounds: &[RoundRecord], ttl: Option<u8>, from_ms: i64, to_ms: i
     let mut s = RowStats::default();
     let (mut lost, mut no_reply) = (0u32, 0u32);
     let mut rtts: Vec<f64> = Vec::new();
+    let toward = toward_in(rounds, from_ms, to_ms);
     for r in rounds {
         if r.ts_ms < from_ms || r.ts_ms >= to_ms {
             continue;
         }
-        let Some(outcome) = outcome(r, ttl) else {
+        let Some(outcome) = outcome(r, ttl, toward) else {
             continue;
         };
         s.sent += 1;
@@ -445,6 +523,15 @@ pub fn row_stats(rounds: &[RoundRecord], ttl: Option<u8>, from_ms: i64, to_ms: i
     s.jitter =
         (n > 1).then(|| rtts.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>() / (n - 1) as f64);
     s
+}
+
+/// The destination for `lost_past_end` over the rounds of `[from_ms, to_ms)`: where those of
+/// them that reached it ended, else where any round of `rounds` (the window) reached it.
+fn toward_in(rounds: &[RoundRecord], from_ms: i64, to_ms: i64) -> Option<u8> {
+    let inside = rounds
+        .iter()
+        .filter(|r| r.reached && r.ts_ms >= from_ms && r.ts_ms < to_ms);
+    most_common(inside.map(|r| r.path_len)).or_else(|| reached_dest_ttl(rounds))
 }
 
 fn most_common(values: impl Iterator<Item = u8>) -> Option<u8> {
@@ -545,6 +632,117 @@ mod tests {
         let v = verdict(&r, &h);
         assert_eq!(v.origin_ttl, Some(3));
         assert_eq!(v.silent_hops, vec![2]);
+    }
+
+    /// Rounds as the monitor assembles them from what each TTL got: '+' an answer, '.' none,
+    /// 'u' "destination unreachable"; the last line is the destination.
+    fn assembled(pattern: &[&str]) -> Vec<RoundRecord> {
+        let n = pattern[0].len();
+        let last = pattern.len() as u8;
+        (0..n)
+            .map(|k| {
+                let samples = pattern
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        let ttl = i as u8 + 1;
+                        let kind = match p.as_bytes()[k] {
+                            b'+' if ttl == last => ReplyKind::Echo,
+                            b'+' => ReplyKind::TimeExceeded,
+                            b'u' => ReplyKind::Unreachable,
+                            _ => return HopSample::lost(ttl, ReplyKind::Timeout),
+                        };
+                        HopSample {
+                            ttl,
+                            kind,
+                            addr: Some(ip(ttl)),
+                            rtt_us: Some(1000 * ttl as u32),
+                        }
+                    })
+                    .collect();
+                crate::monitor::assemble(Ipv4Addr::new(10, 0, 0, last), k as i64 * 1000, samples)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn loss_on_the_path_counts_at_every_hop_past_where_rounds_ended() {
+        // Rounds 3 and 7 lose everything from hop 3 on; the monitor keeps them up to hop 3.
+        let r = assembled(&[
+            "++++++++++",
+            "++++++++++",
+            "+++.+++.++",
+            "+++.+++.++",
+            "+++.+++.++",
+        ]);
+        assert_eq!(r[3].hops.len(), 3);
+        let h = hop_stats(&r);
+        assert_eq!(h.len(), 5);
+        for x in &h[2..] {
+            assert_eq!(
+                (x.sent, x.recv, x.status),
+                (10, 8, HopStatus::Lossy),
+                "{h:?}"
+            );
+        }
+        assert!(h[2].loss_origin && h[4].is_destination, "{h:?}");
+        let v = verdict(&r, &h);
+        assert_eq!((v.dest_loss_pct, v.origin_ttl), (Some(20.0), Some(3)));
+        // The hop timelines count those rounds as lost on the path too.
+        let s = slots(&r, Some(5), 0, 10_000, 1);
+        assert_eq!((s[0].sent, s[0].lost), (10, 2));
+        let t = timeline(&r, Some(4), 0, 10_000, 1);
+        assert_eq!((t[0].sent, t[0].lost), (10, 2));
+        assert_eq!(row_stats(&r, Some(4), 0, 10_000).loss_pct, 20.0);
+    }
+
+    #[test]
+    fn a_router_that_says_unreachable_is_where_the_loss_starts() {
+        // The destination answers, then hop 2 says it is unreachable in rounds 5..10.
+        let r = assembled(&["++++++++++", "+++++uuuuu", "+++++.....", "+++++....."]);
+        let h = hop_stats(&r);
+        assert_eq!(h[1].status, HopStatus::Unreachable);
+        assert!(h[1].loss_origin, "{h:?}");
+        assert!(h[3].is_destination);
+        assert_eq!((h[3].sent, h[3].recv), (10, 5));
+        let v = verdict(&r, &h);
+        assert_eq!((v.dest_loss_pct, v.origin_ttl), (Some(50.0), Some(2)));
+        assert_eq!(v.unreachable_hops, vec![2]);
+    }
+
+    #[test]
+    fn unreachable_at_the_destination_now_and_then_is_loss() {
+        // In one round of ten the router before the destination answers for it.
+        let r = assembled(&["++++++++++", "++++++++++", "+++++u++++"]);
+        let h = hop_stats(&r);
+        assert!(h[2].is_destination);
+        assert_eq!(
+            (h[2].sent, h[2].recv, h[2].status),
+            (10, 9, HopStatus::Lossy)
+        );
+        assert!(h.iter().all(|x| x.status != HopStatus::Unreachable));
+        // One answer in fifty is not a router that refuses the destination.
+        let all = "+".repeat(50);
+        let mut r = assembled(&[all.as_str(), all.as_str(), all.as_str()]);
+        r.extend(assembled(&["+", "u", "."]));
+        let h = hop_stats(&r);
+        assert_eq!(h[1].status, HopStatus::Ok, "{h:?}");
+    }
+
+    #[test]
+    fn a_router_answering_where_rounds_end_is_not_the_destination() {
+        // The destination never answers; hop 2 answers now and then, nothing after it.
+        let r = assembled(&["++++++++++", "+.........", "..........", ".........."]);
+        let h = hop_stats(&r);
+        assert!(h.iter().all(|x| !x.is_destination), "{h:?}");
+        assert_eq!(verdict(&r, &h).dest_loss_pct, Some(100.0));
+        // Silent from the first hop on: the slot after the last answer is the destination.
+        let r = assembled(&["++++", "....", "...."]);
+        let h = hop_stats(&r);
+        assert!(
+            h[1].is_destination && h[1].status == HopStatus::NoReply,
+            "{h:?}"
+        );
     }
 
     #[test]

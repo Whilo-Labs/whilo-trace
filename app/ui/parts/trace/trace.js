@@ -245,17 +245,20 @@
       };
     });
     // Where the loss starts: the core marks it for the window; for a picked period the engine rule runs here:
-    // from the destination back while the loss carries on, silent hops do not count.
+    // from the destination back while the loss carries on, through a router that says the destination is
+    // unreachable and one that misses no less than the destination; silent hops do not count.
     if (main && !idx && tr.hops.some(function (hp) { return 'origin' in hp; })) {
       hops.forEach(function (h, i) { h.origin = !!tr.hops[i].origin; });
     } else {
       var di = hops.length - 1;
       hops.forEach(function (h, i) { if (h.dest) di = i; });
       if (hops[di] && hops[di].status === 'loss') {
-        var oi = di;
+        var oi = di, dl = hops[di].s ? hops[di].s.lossPct : 0;
         for (var j = di - 1; j >= 0; j--) {
-          if (hops[j].status === 'loss') oi = j;
-          else if (hops[j].status !== 'silent') break;
+          var hj = hops[j];
+          if (hj.status === 'loss' || hj.status === 'unreachable') oi = j;
+          else if (hj.status === 'partial' && hj.s && hj.s.lossPct + hj.s.noReplyPct >= dl) oi = j;
+          else if (hj.status !== 'silent') break;
         }
         hops[oi].origin = true;
       }
@@ -264,15 +267,19 @@
     var top = 0;
     hops.forEach(function (h) { if (h.full && fin(h.full.max)) top = Math.max(top, h.full.max); });
     var dest = hops.filter(function (h) { return h.dest; })[0] || null;
-    var lead = dest && dest.s ? dest.s : statsOf(row, idx, rs);
+    // Loss to the destination from the target row: it counts every round, also those that ended before the hops.
+    var lead = statsOf(row, idx, rs);
     // Rounds: in the window from the trace; in a picked period from its numbers, or by its length until they come.
     var rounds = idx
       ? (lead && lead.sent != null ? lead.sent : Math.round((st.range[1] - st.range[0]) / 1000 / (row.interval > 0 ? row.interval : 2.5)))
       : tr.rounds != null ? tr.rounds : (lead && lead.sent) || 0;
     var sel = st.selected;
     if (!hops.some(function (h) { return h.ttl === sel; })) {
+      // The hop that explains the trouble: where the loss starts, else a router that says the destination is
+      // unreachable while the destination does not answer at all.
       var o = hops.filter(function (h) { return h.origin; })[0];
-      sel = (o || dest || hops[hops.length - 1]).ttl;
+      var un0 = hops.filter(function (h) { return h.status === 'unreachable'; })[0];
+      sel = (o || (lead && !fin(lead.avg) && un0) || dest || hops[hops.length - 1]).ttl;
     }
     m.kind = 'trace'; m.main = main; m.hops = hops; m.dest = dest; m.lead = lead; m.scale = nice(top);
     m.rounds = rounds; m.range = idx ? st.range : null; m.idx = idx; m.selected = sel;
@@ -384,14 +391,19 @@
         '</strong>' + avg + '</p>';
     }
     var items = '', dest = m.dest;
+    var un = m.hops.filter(function (h) { return h.status === 'unreachable'; });
     if (dead) {
+      // A router that says the destination is unreachable explains it better than the last answer, unless
+      // rounds also got past it and ended further on.
       var last = null;
       m.hops.forEach(function (h) { if (!h.dest && h.s && fin(h.s.avg)) last = h; });
-      items += last
-        ? li('noreply', S('Последним ответил ', 'The last hop to answer is ') + HL(last.ttl, 'хоп ' + last.ttl, 'hop ' + last.ttl) +
-          (last.addr ? S(' (', ' (') + ip(last.addr) + S('), хопы после него не отвечают.', '); the hops after it do not answer.')
-                     : S(', хопы после него не отвечают.', '; the hops after it do not answer.')))
-        : li('noreply', S('Не отвечает ни один хоп.', 'No hop answers.'));
+      if (!un.length || (last && last.ttl > un[un.length - 1].ttl)) {
+        items += last
+          ? li('noreply', S('Последним ответил ', 'The last hop to answer is ') + HL(last.ttl, 'хоп ' + last.ttl, 'hop ' + last.ttl) +
+            (last.addr ? S(' (', ' (') + ip(last.addr) + S('), хопы после него не отвечают.', '); the hops after it do not answer.')
+                       : S(', хопы после него не отвечают.', '; the hops after it do not answer.')))
+          : li('noreply', S('Не отвечает ни один хоп.', 'No hop answers.'));
+      }
     } else {
       var o = m.hops.filter(function (h) { return h.origin; })[0];
       if (o && o !== dest) {
@@ -402,6 +414,10 @@
         items += li('loss', S('Потери появляются только на цели, хопы до нее отвечают без потерь.', 'Loss shows up only at the destination; the hops before it answer without loss.'));
       }
     }
+    un.forEach(function (h) {
+      items += li('unreachable', HL(h.ttl, 'Хоп ' + h.ttl, 'Hop ' + h.ttl) + (h.addr ? ' (' + ip(h.addr) + ')' : '') +
+        S(' сообщает, что цель недоступна.', ' says the destination is unreachable.'));
+    });
     var pn = probeP(m.probe);
     var sil = m.hops.filter(function (h) { return h.status === 'silent'; });
     if (sil.length === 1) {
@@ -725,7 +741,8 @@
     }
     var dest = m.dest;
     if (dest && dest !== h && dest.src) {
-      var ds = dest.s, davg = fin(ds.avg) ? { ru: ', сред. ' + msr(ds.avg).ru, en: ', avg ' + msr(ds.avg).en } : { ru: '', en: '' };
+      // The numbers of the target row, as in the findings.
+      var ds = m.lead || dest.s, davg = fin(ds.avg) ? { ru: ', сред. ' + msr(ds.avg).ru, en: ', avg ' + msr(ds.avg).en } : { ru: '', en: '' };
       out += '<div></div><div class="tl-sub">' + S('Цель для сравнения', 'Destination for comparison') + '<b class="ip">' + esc(dest.addr || m.target.host) + '</b>' +
         S('потери ' + pr(ds.lossPct).ru + davg.ru, 'loss ' + pr(ds.lossPct).en + davg.en) + (sel ? S('за выделенный период', 'in the selected period') : '') + '</div>';
       out += '<div class="tl-gl mid"><span>' + S('цель', 'dest.') + '</span></div>';

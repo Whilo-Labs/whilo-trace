@@ -77,7 +77,7 @@ ICMP probes and IPv4 only for now. TCP and UDP probes are planned.
 
 1. Every round sends one ICMP echo per TTL, from 1 to the length of the path, 25 ms apart and all in flight together. Routers on the way answer "time exceeded", the destination answers with an echo reply.
 2. The round keeps who answered at each hop and how fast. Rounds go to SQLite, and every number on screen is computed for the window you are looking at.
-3. Each hop gets a neutral status: **OK**; **loss**, when the loss carries on to the destination; **answers some probes**, when the hop limits its own replies while the hops after it answer; **no reply to this probe type**, when it is silent while the hops after it answer; **no reply**.
+3. Each hop gets a neutral status: **OK**; **loss**, when the loss carries on to the destination; **answers some probes**, when the hop limits its own replies while the hops after it answer; **no reply to this probe type**, when it is silent while the hops after it answer; **says the destination is unreachable**, when a router answers that it cannot reach the destination, so the path ends there; **no reply**.
 4. The hop where the loss starts is the first one from which the loss carries on to the destination. That is the line to show your ISP.
 
 ## Build from source

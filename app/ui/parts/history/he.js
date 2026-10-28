@@ -805,6 +805,7 @@
     var ru = [lossy ? 'Потери до цели ' + pc(s.lossPct, false) + ' за ' + r[0] + '.' : 'Потерь до цели нет за ' + r[0] + '.'];
     var en = [lossy ? pc(s.lossPct, true) + ' loss to the destination over ' + r[1] + '.' : 'No loss to the destination over ' + r[1] + '.'];
     if (o) { ru.push('Потери начинаются на хопе ' + o.ttl + atAddr(o) + ' и продолжаются до цели.'); en.push('Loss starts at hop ' + o.ttl + atAddr(o) + ' and carries on to the destination.'); }
+    (p.unreachable || []).forEach(function (h) { ru.push('Хоп ' + h.ttl + atAddr(h) + ' сообщает, что цель недоступна.'); en.push('Hop ' + h.ttl + atAddr(h) + ' says the destination is unreachable.'); });
     var sil = p.silent || [], label = probeLabel(t);
     if (sil.length === 1) { ru.push('Хоп ' + sil[0] + ' не отвечает на ' + label + ', хопы дальше отвечают.'); en.push('Hop ' + sil[0] + ' does not answer ' + label + '; later hops do.'); }
     if (sil.length > 1) { ru.push('Хопы ' + andList(sil, false) + ' не отвечают на ' + label + ', хопы дальше отвечают.'); en.push('Hops ' + andList(sil, true) + ' do not answer ' + label + '; later hops do.'); }

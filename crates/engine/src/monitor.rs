@@ -582,7 +582,7 @@ fn work(id: u64, mut prober: Box<dyn Prober>, jobs: Receiver<Job>, done: Sender<
 }
 
 /// Where the next round can stop: at the destination, once it answered.
-fn next_path_len(known: Option<u8>, record: &RoundRecord) -> Option<u8> {
+pub(crate) fn next_path_len(known: Option<u8>, record: &RoundRecord) -> Option<u8> {
     if record.reached {
         Some(record.path_len)
     } else if record
@@ -598,7 +598,10 @@ fn next_path_len(known: Option<u8>, record: &RoundRecord) -> Option<u8> {
 }
 
 /// Cuts a round at the destination. Probes with a larger TTL reach the destination too
-/// and add nothing.
+/// and add nothing. A round that did not reach it ends one silent slot after the last hop
+/// that answered, or at a router that says the destination is unreachable; the statistics
+/// count its probes to the hops from that end to the destination as lost
+/// (`stats::lost_past_end`).
 pub(crate) fn assemble(dst: Ipv4Addr, ts_ms: i64, mut samples: Vec<HopSample>) -> RoundRecord {
     samples.sort_by_key(|s| s.ttl);
     let end = samples

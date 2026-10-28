@@ -71,7 +71,7 @@
 .sum-mk.ok { background: var(--ok); }
 .sum-mk.loss { background: var(--loss); }
 .sum-mk.partial { background: var(--partial); }
-.sum-mk.noreply { background: var(--muted); }
+.sum-mk.noreply, .sum-mk.unreachable { background: var(--muted); }
 .sum-mk.silent { background: var(--silent); }
 /* a row error: neutral grey like "no reply", the short status and the text are in the row and the tooltip */
 .sum-mk.error { background: var(--muted); }

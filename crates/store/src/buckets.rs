@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::ops::Range;
 use whilo_trace_engine::stats::LOSS_NOTABLE_PCT;
-use whilo_trace_engine::{HopStatus, RoundRecord};
+use whilo_trace_engine::{HopStatus, ReplyKind, RoundRecord};
 
 /// One line (the destination or one TTL) in one bucket.
 #[derive(Debug, Clone, Default)]
@@ -24,6 +24,10 @@ pub struct Cell {
     /// Probes with a sample here: rounds that reached this TTL (for the destination, all rounds).
     pub sent: u32,
     pub recv: u32,
+    /// Answers from the destination itself, counted in `recv`.
+    pub echo: u32,
+    /// Answers that said the destination is unreachable, counted in `recv`.
+    pub unreachable: u32,
     /// No answer while the destination was lost in the same round.
     pub lost_path: u32,
     n: u32,
@@ -38,14 +42,25 @@ pub struct Cell {
     jn: u32,
     /// The latest probe here got no answer.
     last_lost: bool,
+    /// The latest answer here said the destination is unreachable.
+    last_unreachable: bool,
     /// Who answered last.
     addr: Option<IpAddr>,
 }
 
 impl Cell {
-    fn add(&mut self, answered: bool, dest_lost: bool, rtt_ms: Option<f64>, addr: Option<IpAddr>) {
+    fn add(
+        &mut self,
+        kind: Option<ReplyKind>,
+        dest_lost: bool,
+        rtt_ms: Option<f64>,
+        addr: Option<IpAddr>,
+    ) {
+        let answered = kind.is_some_and(ReplyKind::answered);
+        let unreachable = kind == Some(ReplyKind::Unreachable);
         self.sent += 1;
         self.last_lost = !answered;
+        self.last_unreachable = unreachable;
         if !answered {
             if dest_lost {
                 self.lost_path += 1;
@@ -53,10 +68,13 @@ impl Cell {
             return;
         }
         self.recv += 1;
+        self.echo += u32::from(kind == Some(ReplyKind::Echo));
+        self.unreachable += u32::from(unreachable);
         if addr.is_some() {
             self.addr = addr;
         }
-        if let Some(ms) = rtt_ms {
+        // "Unreachable" carries no latency, as in `whilo_trace_engine::stats`.
+        if let Some(ms) = rtt_ms.filter(|_| !unreachable) {
             if self.n == 0 {
                 self.min = ms;
                 self.max = ms;
@@ -76,6 +94,14 @@ impl Cell {
     /// No answer while the destination answered: the hop limits its own replies.
     pub fn lost_partial(&self) -> u32 {
         self.sent - self.recv - self.lost_path
+    }
+
+    /// At the destination's TTL "unreachable" from the router before it is a lost round, as the
+    /// engine's `outcome` counts it.
+    fn unreachable_lost(&mut self) {
+        self.recv -= self.unreachable;
+        self.lost_path += self.unreachable;
+        self.last_lost |= self.last_unreachable;
     }
 
     pub fn avg(&self) -> Option<f64> {
@@ -99,8 +125,19 @@ pub struct Slot {
     pub dest: Cell,
     /// One cell per TTL, `hops[ttl - 1]`.
     pub hops: Vec<Cell>,
-    /// How often each route length was seen.
-    path_lens: Vec<(u8, u32)>,
+    /// How often rounds that reached the destination ended at each TTL.
+    reached_lens: Vec<(u8, u32)>,
+    /// How often rounds that did not reach it ended at each TTL.
+    lost_lens: Vec<(u8, u32)>,
+    /// Where the latest round ended, and whether it reached the destination.
+    last_round: Option<(u8, bool)>,
+}
+
+fn count(lens: &mut Vec<(u8, u32)>, len: u8) {
+    match lens.iter_mut().find(|(l, _)| *l == len) {
+        Some(e) => e.1 += 1,
+        None => lens.push((len, 1)),
+    }
 }
 
 impl Slot {
@@ -108,7 +145,8 @@ impl Slot {
         self.rounds += 1;
         let dest_lost = !r.reached;
         let dest_rtt = r.destination().and_then(|h| h.rtt_ms());
-        self.dest.add(r.reached, dest_lost, dest_rtt, Some(r.dst));
+        let dest_kind = r.reached.then_some(ReplyKind::Echo);
+        self.dest.add(dest_kind, dest_lost, dest_rtt, Some(r.dst));
         for h in &r.hops {
             if h.ttl == 0 {
                 continue;
@@ -117,20 +155,54 @@ impl Slot {
             if self.hops.len() <= i {
                 self.hops.resize(i + 1, Cell::default());
             }
-            self.hops[i].add(h.kind.answered(), dest_lost, h.rtt_ms(), h.addr);
+            self.hops[i].add(Some(h.kind), dest_lost, h.rtt_ms(), h.addr);
         }
-        match self
-            .path_lens
-            .iter_mut()
-            .find(|(len, _)| *len == r.path_len)
-        {
-            Some(e) => e.1 += 1,
-            None => self.path_lens.push((r.path_len, 1)),
+        if r.reached {
+            count(&mut self.reached_lens, r.path_len);
+        } else {
+            count(&mut self.lost_lens, r.path_len);
         }
+        self.last_round = Some((r.path_len, r.reached));
     }
 
     pub fn hop(&self, ttl: u8) -> Option<&Cell> {
         self.hops.get((ttl as usize).checked_sub(1)?)
+    }
+
+    /// Rounds of this slot lost at `ttl` without a probe kept there: they did not reach the
+    /// destination at `dest` and ended before `ttl` (`whilo_trace_engine::lost_past_end`).
+    fn lost_before(&self, ttl: u8, dest: Option<u8>) -> u32 {
+        if !dest.is_some_and(|d| ttl <= d) {
+            return 0;
+        }
+        self.lost_lens
+            .iter()
+            .filter(|(len, _)| *len < ttl)
+            .map(|(_, n)| n)
+            .sum()
+    }
+
+    /// The cell of the hop at `ttl` with those rounds counted as lost on the path.
+    fn hop_seen(&self, ttl: u8, dest: Option<u8>) -> Option<Cell> {
+        let extra = self.lost_before(ttl, dest);
+        let base = self.hop(ttl);
+        if base.is_none() && extra == 0 {
+            return None;
+        }
+        let mut c = base.cloned().unwrap_or_default();
+        if extra > 0 {
+            c.sent += extra;
+            c.lost_path += extra;
+            // The latest round ended before this hop: its probe here was the last one, lost.
+            if self
+                .last_round
+                .is_some_and(|(len, reached)| !reached && len < ttl)
+            {
+                c.last_lost = true;
+                c.last_unreachable = false;
+            }
+        }
+        Some(c)
     }
 }
 
@@ -275,6 +347,8 @@ pub struct HopInfo {
     pub addr: Option<IpAddr>,
     pub sent: u32,
     pub recv: u32,
+    /// Answers that said the destination is unreachable, counted in `recv`.
+    pub unreachable: u32,
     pub status: HopStatus,
     pub is_destination: bool,
     /// First hop of the loss that reaches the destination.
@@ -286,15 +360,6 @@ pub struct HopInfo {
 pub enum Pick {
     Dest,
     Hop(u8),
-}
-
-impl Pick {
-    fn cell(self, s: &Slot) -> Option<&Cell> {
-        match self {
-            Pick::Dest => Some(&s.dest),
-            Pick::Hop(ttl) => s.hop(ttl),
-        }
-    }
 }
 
 /// N consecutive buckets of a grid; `None` where the grid has nothing.
@@ -345,25 +410,44 @@ impl<'a> Window<'a> {
             .min(u8::MAX as usize) as u8
     }
 
-    /// Route length seen most often; on a tie the shorter one.
+    /// TTL of the destination: where the rounds that reached it ended most often, else where
+    /// most rounds ended; on a tie the shorter one.
     pub fn dest_ttl(&self) -> Option<u8> {
         self.dest_ttl_in(self.all())
     }
 
     fn dest_ttl_in(&self, r: Range<usize>) -> Option<u8> {
-        let mut counts: Vec<(u8, u32)> = Vec::new();
-        for s in self.slots_in(r) {
-            for &(len, n) in &s.path_lens {
-                match counts.iter_mut().find(|(l, _)| *l == len) {
-                    Some(e) => e.1 += n,
-                    None => counts.push((len, n)),
+        self.toward_in(r.clone()).or_else(|| {
+            most_seen(
+                self.slots_in(r)
+                    .flat_map(|s| s.reached_lens.iter().chain(&s.lost_lens)),
+            )
+        })
+    }
+
+    /// Where the rounds of `r` that reached the destination ended most often.
+    fn reached_ttl_in(&self, r: Range<usize>) -> Option<u8> {
+        most_seen(self.slots_in(r).flat_map(|s| s.reached_lens.iter()))
+    }
+
+    /// The destination that rounds which ended before it are counted toward (`Slot::lost_before`):
+    /// where the rounds of `r` reached it, else where those of the whole window did.
+    fn toward_in(&self, r: Range<usize>) -> Option<u8> {
+        self.reached_ttl_in(r)
+            .or_else(|| self.reached_ttl_in(self.all()))
+    }
+
+    /// A line's cell in a slot, counted as the engine's `outcome` counts the rounds.
+    fn cell_of(s: &Slot, pick: Pick, toward: Option<u8>) -> Option<Cell> {
+        match pick {
+            Pick::Dest => Some(s.dest.clone()),
+            Pick::Hop(ttl) => s.hop_seen(ttl, toward).map(|mut c| {
+                if Some(ttl) == toward {
+                    c.unreachable_lost();
                 }
-            }
+                c
+            }),
         }
-        counts
-            .into_iter()
-            .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
-            .map(|(len, _)| len)
     }
 
     pub fn line(&self, pick: Pick) -> Line {
@@ -376,13 +460,14 @@ impl<'a> Window<'a> {
             lost: Vec::with_capacity(n),
             ..Line::default()
         };
+        let toward = self.toward_in(self.all());
         for (i, s) in self.slots.iter().enumerate() {
-            let c = s.and_then(|s| pick.cell(s));
-            out.avg.push(c.and_then(Cell::avg));
-            out.lo.push(c.and_then(Cell::min));
-            out.hi.push(c.and_then(Cell::max));
-            out.sent.push(c.map_or(0, |c| c.sent));
-            out.lost.push(c.map_or(0, |c| c.sent - c.recv));
+            let c = s.and_then(|s| Self::cell_of(s, pick, toward));
+            out.avg.push(c.as_ref().and_then(Cell::avg));
+            out.lo.push(c.as_ref().and_then(Cell::min));
+            out.hi.push(c.as_ref().and_then(Cell::max));
+            out.sent.push(c.as_ref().map_or(0, |c| c.sent));
+            out.lost.push(c.as_ref().map_or(0, |c| c.sent - c.recv));
             if let Some(c) = c {
                 if c.lost_path > 0 {
                     out.loss.push(i as u32);
@@ -399,8 +484,11 @@ impl<'a> Window<'a> {
         let mut st = LineStats::default();
         let (mut n, mut sum, mut jsum, mut jn) = (0u32, 0.0f64, 0.0f64, 0u32);
         let mut prev: Option<f64> = None;
+        let toward = self.toward_in(r.clone());
         for s in self.slots_in(r) {
-            let Some(c) = pick.cell(s) else { continue };
+            let Some(c) = Self::cell_of(s, pick, toward) else {
+                continue;
+            };
             if c.sent == 0 {
                 continue;
             }
@@ -436,15 +524,24 @@ impl<'a> Window<'a> {
     /// Every TTL probed in the buckets `r`, classified over those buckets only: the statuses of a
     /// picked period. The same as `hop_stats` over the rounds of `r`.
     pub fn hops_in(&self, r: Range<usize>) -> Vec<HopInfo> {
-        let max_ttl = self.max_ttl_in(r.clone());
+        if self.rounds_in(r.clone()) == 0 {
+            return Vec::new();
+        }
+        let toward = self.toward_in(r.clone());
+        let max_ttl = self.max_ttl_in(r.clone()).max(toward.unwrap_or(0));
         let dest_ttl = self.dest_ttl_in(r.clone());
         let mut rows: Vec<(HopInfo, f64)> = (1..=max_ttl)
             .map(|ttl| {
-                let (mut sent, mut recv) = (0u32, 0u32);
+                let (mut sent, mut recv, mut echo, mut unreachable) = (0u32, 0u32, 0u32, 0u32);
                 let mut addrs: Vec<(IpAddr, u32)> = Vec::new();
-                for c in self.slots_in(r.clone()).filter_map(|s| s.hop(ttl)) {
+                for c in self
+                    .slots_in(r.clone())
+                    .filter_map(|s| s.hop_seen(ttl, toward))
+                {
                     sent += c.sent;
                     recv += c.recv;
+                    echo += c.echo;
+                    unreachable += c.unreachable;
                     if let Some(a) = c.addr {
                         match addrs.iter_mut().find(|(x, _)| *x == a) {
                             Some(e) => e.1 += c.recv,
@@ -454,6 +551,10 @@ impl<'a> Window<'a> {
                 }
                 // On a tie the latest responder wins: max_by keeps the last maximum.
                 let addr = addrs.iter().max_by_key(|(_, n)| *n).map(|(a, _)| *a);
+                // A row where only routers answered is not the destination, and at the
+                // destination "unreachable" is a lost round, as in `hop_stats`.
+                let is_destination = Some(ttl) == dest_ttl && (echo > 0 || recv == 0);
+                let recv = recv - if is_destination { unreachable } else { 0 };
                 let loss_pct = pct(sent - recv, sent);
                 (
                     HopInfo {
@@ -461,8 +562,9 @@ impl<'a> Window<'a> {
                         addr,
                         sent,
                         recv,
+                        unreachable,
                         status: HopStatus::Ok,
-                        is_destination: Some(ttl) == dest_ttl,
+                        is_destination,
                         loss_origin: false,
                     },
                     loss_pct,
@@ -487,7 +589,9 @@ fn classify(rows: &mut [(HopInfo, f64)]) {
                 .filter(|(r, _)| r.recv > 0)
                 .map(|(_, l)| *l)
                 .reduce(f64::min);
-            if row.recv == 0 {
+            if !row.is_destination && notable(row.unreachable, row.sent) {
+                HopStatus::Unreachable
+            } else if row.recv == 0 {
                 if later_alive {
                     HopStatus::Silent
                 } else {
@@ -514,15 +618,37 @@ fn classify(rows: &mut [(HopInfo, f64)]) {
     if rows[dest].0.status != HopStatus::Lossy {
         return;
     }
+    let dest_loss = rows[dest].1;
     let mut origin = dest;
     for j in (0..dest).rev() {
         match rows[j].0.status {
-            HopStatus::Lossy => origin = j,
+            HopStatus::Lossy | HopStatus::Unreachable => origin = j,
+            HopStatus::RateLimited if rows[j].1 >= dest_loss => origin = j,
             HopStatus::Silent => {}
             _ => break,
         }
     }
     rows[origin].0.loss_origin = true;
+}
+
+/// `part` is a notable share of `all`: at least `LOSS_NOTABLE_PCT`.
+fn notable(part: u32, all: u32) -> bool {
+    all > 0 && part as f64 * 100.0 >= LOSS_NOTABLE_PCT * all as f64
+}
+
+/// The length seen most often in `(length, count)` pairs; on a tie the shorter one.
+fn most_seen<'x>(lens: impl Iterator<Item = &'x (u8, u32)>) -> Option<u8> {
+    let mut counts: Vec<(u8, u32)> = Vec::new();
+    for &(len, n) in lens {
+        match counts.iter_mut().find(|(l, _)| *l == len) {
+            Some(e) => e.1 += n,
+            None => counts.push((len, n)),
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+        .map(|(len, _)| len)
 }
 
 /// Grids kept per target: one per bucket width in use, the oldest unused one goes first.
