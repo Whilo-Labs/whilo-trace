@@ -1,0 +1,20 @@
+[package]
+name = "whilo-trace-geo"
+description = "Places of the routers on a path and the speed-of-light check for Whilo Trace"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+maxminddb.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+flate2.workspace = true
+ureq.workspace = true
+rustls.workspace = true
+
+[dev-dependencies]
+mmdb-writer.workspace = true
+whilo-trace-engine.workspace = true
