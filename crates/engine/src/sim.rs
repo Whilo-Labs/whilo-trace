@@ -306,6 +306,17 @@ impl Path {
     }
 }
 
+/// Round trips without noise to every hop of the path to `target`, ms: TTL 1 first, the
+/// destination last. The route map places its made-up routers by them. Empty for an IPv6
+/// address, which the simulated network does not reach.
+pub fn model_rtts(target: IpAddr) -> Vec<f64> {
+    let IpAddr::V4(dst) = target else {
+        return Vec::new();
+    };
+    let path = Path::to(dst);
+    (1..=path.len).map(|ttl| path.rtt_ms(ttl)).collect()
+}
+
 /// The simulated network: one for the app, shared by every monitor.
 pub struct SimNet {
     /// Rounds take as long as real ones; tests turn it off.
@@ -596,6 +607,32 @@ mod tests {
         assert_eq!(p.addr(1, dst), Ipv4Addr::new(192, 168, 1, 1));
         assert_eq!(p.addr(p.len, dst), dst);
         assert_eq!(p.addr(p.len + 3, dst), dst);
+    }
+
+    #[test]
+    fn model_round_trips_are_the_path_without_noise() {
+        // Fixed numbers: the route map puts its made-up routers where these allow.
+        let rtts = model_rtts(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)));
+        let want = [
+            0.42,
+            3.801_973_110_606,
+            5.878_894_161_806,
+            7.755_435_548_890,
+            8.199_266_092_797,
+            9.389_151_988_026,
+            12.609_828_344_360,
+            15.349_669_651_862,
+            17.899_458_504_833,
+            20.351_666_047_328,
+            20.0,
+        ];
+        assert_eq!(rtts.len(), want.len());
+        for (i, (got, want)) in rtts.iter().zip(want).enumerate() {
+            assert!((got - want).abs() < 1e-9, "hop {}: {got}", i + 1);
+        }
+        // Hosts at home are one hop away; IPv6 is not reached.
+        assert_eq!(model_rtts(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))), [0.5]);
+        assert!(model_rtts(IpAddr::V6(Ipv6Addr::LOCALHOST)).is_empty());
     }
 
     #[test]
