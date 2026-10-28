@@ -892,6 +892,7 @@ fn a_report_covers_several_targets_in_the_window_language() {
         generated_ms: 8000,
         findings,
         lang: "ru",
+        map_png: None,
     };
     let doc = doc_with(None);
     let html = report::document_html(&doc);
@@ -943,4 +944,70 @@ fn a_report_covers_several_targets_in_the_window_language() {
     assert_eq!(json["findings"], serde_json::json!([]));
     assert!(json["targets"][0].get("findings").is_none());
     assert!(!report::document_json(&none).contains("Packet loss"));
+}
+
+#[test]
+fn a_report_with_the_route_map_shows_it_inline_and_credits_dbip() {
+    use super::report::{self, Document, Report, DBIP_CREDIT};
+    use whilo_trace_engine::{timeline, verdict};
+    let a = rounds(&["++++", "++++"], 1000);
+    let hops = hop_stats(&a);
+    let v = verdict(&a, &hops);
+    let line = timeline(&a, None, 0, 4000, 4);
+    let names = vec![None; hops.len()];
+    let r = Report {
+        host: "10.0.0.2",
+        dst: a.last().map(|r| r.dst),
+        probe: ProbeKind::Icmp,
+        from_ms: 0,
+        to_ms: 4000,
+        tz_offset_min: 0,
+        interval_s: 1.0,
+        hops: &hops,
+        names: &names,
+        timeline: &line,
+        verdict: &v,
+        generated_ms: 4000,
+    };
+    // The command line and a report without a map: no figure, no credit.
+    let plain = report::html(&r);
+    assert!(!plain.contains("<figure") && !plain.contains("DB-IP"));
+
+    let html_with = |png: &[u8], lang| {
+        let mut doc = Document::single(r);
+        doc.map_png = Some(png);
+        doc.lang = lang;
+        report::document_html(&doc)
+    };
+    let html = html_with(b"\x89PNG\r\n\x1a\nmap", "en");
+    assert!(html.contains(
+        "<h3>Route map</h3><figure class=\"map\"><img src=\"data:image/png;base64,iVBORw0KGgptYXA=\" alt=\"Route map\"></figure>"
+    ));
+    // Above the charts of the target, and the credit DB-IP asks for in the footer.
+    assert!(html.find("<figure").unwrap() < html.find("Destination latency and loss").unwrap());
+    let footer = &html[html.find("<footer>").unwrap()..];
+    assert!(
+        footer.contains(&format!(" {DBIP_CREDIT}.</footer>")),
+        "{footer}"
+    );
+    assert_eq!(
+        DBIP_CREDIT,
+        "IP Geolocation by DB-IP (https://db-ip.com), CC BY 4.0"
+    );
+    assert!(html_with(b"x", "ru").contains("<h3>Карта маршрута</h3>"));
+    // Base64 with padding, as data URLs have it.
+    for (bytes, text) in [
+        (&b"f"[..], "Zg=="),
+        (b"fo", "Zm8="),
+        (b"foo", "Zm9v"),
+        (b"foob", "Zm9vYg=="),
+        (b"fooba", "Zm9vYmE="),
+        (b"foobar", "Zm9vYmFy"),
+        (b"\xff\xfe\xfd", "//79"),
+    ] {
+        assert!(
+            html_with(bytes, "en").contains(&format!("base64,{text}\"")),
+            "{text}"
+        );
+    }
 }

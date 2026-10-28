@@ -10,6 +10,9 @@ use whilo_trace_engine::{Bucket, HopStats, HopStatus, ProbeKind, RoundRecord, Ve
 
 pub const GENERATOR: &str = concat!("Whilo Trace ", env!("CARGO_PKG_VERSION"));
 
+/// The attribution DB-IP asks for under CC BY 4.0, wherever places from its databases are shown.
+pub const DBIP_CREDIT: &str = "IP Geolocation by DB-IP (https://db-ip.com), CC BY 4.0";
+
 /// One target over the report interval.
 #[derive(Clone, Copy)]
 pub struct Report<'a> {
@@ -57,6 +60,9 @@ pub struct Document<'a> {
     pub findings: Option<Vec<String>>,
     /// "ru" or "en": the language of the HTML page. CSV and JSON stay in English.
     pub lang: &'a str,
+    /// The route map as the interface drew it (PNG). The HTML page shows it inline, so the page
+    /// stays one file, and credits DB-IP for the places on it.
+    pub map_png: Option<&'a [u8]>,
 }
 
 impl<'a> Document<'a> {
@@ -73,6 +79,7 @@ impl<'a> Document<'a> {
             }],
             findings: None,
             lang: "en",
+            map_png: None,
         }
     }
 
@@ -436,6 +443,7 @@ struct Words {
     unknown: &'static str,
     method: &'static str,
     times_in: &'static str,
+    map: &'static str,
 }
 
 /// The note under the report: the statuses that are not loss, named as in the hop table.
@@ -498,6 +506,7 @@ fn words(ru: bool) -> Words {
             unknown: "адрес неизвестен",
             method: "Метод",
             times_in: "Время",
+            map: "Карта маршрута",
         }
     } else {
         Words {
@@ -519,6 +528,7 @@ fn words(ru: bool) -> Words {
             unknown: "address unknown",
             method: "Method",
             times_in: "Times in",
+            map: "Route map",
         }
     }
 }
@@ -551,7 +561,18 @@ pub fn document_html(d: &Document) -> String {
             .collect();
         format!("\n<ul class=\"findings\">{items}</ul>")
     };
-    let mut body = String::new();
+    let (map, credit) = match d.map_png {
+        Some(png) => (
+            format!(
+                "<h3>{title}</h3><figure class=\"map\"><img src=\"data:image/png;base64,{}\" alt=\"{title}\"></figure>",
+                base64(png),
+                title = w.map,
+            ),
+            format!(" {DBIP_CREDIT}."),
+        ),
+        None => (String::new(), String::new()),
+    };
+    let mut body = map;
     for s in &d.sections {
         let r = &s.report;
         if !single {
@@ -625,13 +646,15 @@ tr.loss .badge {{ background: #fdeaea; color: #b42318; }}
 tr.origin td {{ background: #fff5f5; font-weight: 600; }}
 .legend {{ color: #5b6475; font-size: 12px; margin-top: 6px; }}
 .legend i {{ display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 14px; vertical-align: -1px; }}
+figure.map {{ margin: 0; }}
+figure.map img {{ width: 100%; height: auto; display: block; border: 1px solid #e6e9f0; border-radius: 8px; }}
 footer {{ margin-top: 28px; color: #8a92a3; font-size: 12px; }}
 </style></head>
 <body><main>
 <h1>{heading}</h1>
 <div class="meta">{interval} <b>{from}</b> {to_word} <b>{to}</b> ({tz}), {dur}, {rounds} {rounds_word}. {generated} {gen}.</div>{findings}
 {body}
-<footer>{generator}. {method_word}: {method}. {times_in} {tz}. {note}</footer>
+<footer>{generator}. {method_word}: {method}. {times_in} {tz}. {note}{credit}</footer>
 </main></body></html>
 "#,
         lang = if ru { "ru" } else { "en" },
@@ -653,7 +676,28 @@ footer {{ margin-top: 28px; color: #8a92a3; font-size: 12px; }}
         method = esc(&methods),
         times_in = w.times_in,
         note = esc(&note(ru, &d.probes())),
+        credit = esc(&credit),
     )
+}
+
+/// `bytes` in standard base64 with padding, for a `data:` URL.
+fn base64(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, &b)| acc | (u32::from(b) << (16 - 8 * i)));
+        for k in 0..4 {
+            if k <= chunk.len() {
+                out.push(ABC[((n >> (18 - 6 * k)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// The method line; targets with different intervals each get theirs.

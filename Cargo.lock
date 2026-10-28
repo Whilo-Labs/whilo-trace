@@ -4452,12 +4452,15 @@ dependencies = [
 name = "whilo-trace"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "mmdb-writer",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "whilo-trace-engine",
+ "whilo-trace-geo",
  "whilo-trace-store",
 ]
 

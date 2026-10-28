@@ -1,11 +1,22 @@
 //! What the interface asks for and gets back: the types behind the Tauri commands.
 //! The same shapes are described with examples in `docs/ui-contract.md`; JSON keys are camelCase.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 
 fn default_buckets() -> u32 {
     120
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// A key that may be missing (`None`: leave the value as it is) or null (`Some(None)`: clear it).
+fn some<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
 }
 
 /// What the screen is looking at.
@@ -47,6 +58,8 @@ pub struct Snapshot {
     /// Probes per second over all running rows.
     pub rate_pps: f64,
     pub recent: Vec<String>,
+    /// The database of places for the map.
+    pub geo: GeoStatus,
 }
 
 /// One line of data: a target with one probe type, or a hop pinned from a trace.
@@ -148,6 +161,8 @@ pub struct Trace {
     /// Rounds in the window.
     pub rounds: u32,
     pub hops: Vec<TraceHop>,
+    /// Where the path starts on the map; null without one.
+    pub home: Option<TraceHome>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -175,6 +190,9 @@ pub struct TraceHop {
     pub stats: Stats,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub range_stats: Option<Stats>,
+    /// The place of the hop; null for a hop without an address, and on every hop of a trace
+    /// without a target address.
+    pub geo: Option<HopGeo>,
 }
 
 /// Loss marks for the day strip: 200 slots over the 24 hours that end at `to_ms`.
@@ -198,6 +216,13 @@ pub struct Settings {
     pub lang: String,
     /// Window the main screen opens with.
     pub window: String,
+    /// Look for a newer database of places when the map opens: at most one answered request a
+    /// day (`geo_check`).
+    #[serde(default = "yes")]
+    pub geo_check: bool,
+    /// Home put on the map by hand; null: the first router placed in a city.
+    #[serde(default)]
+    pub home: Option<HomeSetting>,
 }
 
 impl Default for Settings {
@@ -208,8 +233,17 @@ impl Default for Settings {
             theme: "system".into(),
             lang: "ru".into(),
             window: "10m".into(),
+            geo_check: true,
+            home: None,
         }
     }
+}
+
+/// A point on the globe, in degrees, rounded to 0.1°.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct HomeSetting {
+    pub lat: f64,
+    pub lon: f64,
 }
 
 /// `set_settings` takes only the fields that change.
@@ -221,6 +255,10 @@ pub struct SettingsPatch {
     pub theme: Option<String>,
     pub lang: Option<String>,
     pub window: Option<String>,
+    pub geo_check: Option<bool>,
+    /// No key leaves the home as it is; null clears it.
+    #[serde(default, deserialize_with = "some")]
+    pub home: Option<Option<HomeSetting>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -254,10 +292,136 @@ pub struct ReportReq {
     /// Folder picked by the user; `None` means Documents/Whilo Trace. The report goes into a new
     /// folder `<name>-<time>` inside it.
     pub dir: Option<String>,
+    /// The route map drawn by the interface (PNG): written as map.png and shown in report.html.
+    #[serde(default)]
+    pub map_png_base64: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ExportRes {
     pub dir: String,
     pub files: Vec<String>,
+}
+
+/// The database of places, in every snapshot.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeoStatus {
+    /// "ok", "missing", "unreadable" or "simulated".
+    pub state: String,
+    /// Release month of the database, "2026-10".
+    pub month: Option<String>,
+    /// "bundled", "downloaded" or "simulated"; null without a database.
+    pub source: Option<String>,
+    /// The last download of this run; null when there was none.
+    pub download: Option<GeoDownload>,
+}
+
+impl Default for GeoStatus {
+    fn default() -> Self {
+        GeoStatus {
+            state: "missing".into(),
+            month: None,
+            source: None,
+            download: None,
+        }
+    }
+}
+
+/// A download of the database of places: in `Snapshot.geo` and the payload of the `geo` event.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GeoDownload {
+    /// "running", "done", "failed" or "cancelled".
+    pub state: String,
+    pub month: String,
+    /// Bytes received so far.
+    pub received: u64,
+    /// Bytes of both files, when the server tells their sizes.
+    pub total: Option<u64>,
+    /// An error code: "net: <detail>", "http: 404", "geo_invalid: <detail>", "io: <detail>",
+    /// "geo_cancelled".
+    pub error: Option<String>,
+}
+
+/// Where the path starts on the map.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceHome {
+    pub lat: f64,
+    pub lon: f64,
+    pub city: Option<String>,
+    /// ISO 3166 alpha-2 country code.
+    pub cc: Option<String>,
+    /// In the interface language.
+    pub country: Option<String>,
+    /// "auto": the first router placed in a city; "manual": put by the user (no names then).
+    pub source: String,
+    /// The hop it was taken from.
+    pub ttl: Option<u8>,
+}
+
+/// The place of a hop and its speed-of-light check.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HopGeo {
+    /// "own" (drawn at home), "city", "country" or "none".
+    pub level: String,
+    /// The special-purpose range of an address that was not looked up: "private", "cgnat",
+    /// "loopback", "link-local", "documentation", "benchmarking", "multicast", "reserved",
+    /// "unspecified", "broadcast".
+    pub special: Option<String>,
+    pub city: Option<String>,
+    pub region: Option<String>,
+    pub cc: Option<String>,
+    /// In the interface language.
+    pub country: Option<String>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+    pub asn: Option<u32>,
+    pub as_org: Option<String>,
+    /// Great-circle distance from home, km.
+    pub dist_km: Option<f64>,
+    /// The shortest round trip over that distance in fibre and in vacuum, ms.
+    pub fiber_ms: Option<f64>,
+    pub vacuum_ms: Option<f64>,
+    /// The round trip checked: the hop's minimum over the window, ms.
+    pub rtt_ms: Option<f64>,
+    /// How much longer than light in fibre the answer took; only with verdict "ok".
+    pub extra_ms: Option<f64>,
+    /// "ok", "doubtful" or "impossible".
+    pub verdict: Option<String>,
+}
+
+/// What `geo_check` found.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GeoCheckRes {
+    pub offer: Option<GeoOffer>,
+    /// "offer", "current", "none", "missing", "cached", "asked", "disabled", "simulated" or
+    /// "error".
+    pub reason: String,
+}
+
+/// Newer databases that are out.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct GeoOffer {
+    pub month: String,
+    /// Size of the compressed City file when the server tells it; the ASN file adds about 5 MB.
+    pub bytes: Option<u64>,
+}
+
+/// A picture to save: the route map as the interface drew it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveImageReq {
+    /// Folder picked by the user; `None` means Documents/Whilo Trace.
+    pub dir: Option<String>,
+    /// File name without `.png`.
+    pub name: String,
+    pub png_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SaveImageRes {
+    pub path: String,
 }

@@ -4,11 +4,13 @@
 //! the full trace of one target. Commands and their JSON: `docs/ui-contract.md`.
 
 mod contract;
+mod geo;
 
 use contract::{
     AddTargetReq, ExportRes, History, HopRef, IdRes, PartialHop, PathSummary, ReportReq, Row,
     Settings, SettingsPatch, Snapshot, SnapshotReq, Stats, Trace, TraceHop,
 };
+use geo::GeoState;
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::ops::Range;
@@ -163,6 +165,9 @@ struct Core {
     pins: Mutex<BTreeMap<i64, Pin>>,
     settings: Mutex<Settings>,
     recent: Mutex<Vec<String>>,
+    /// Places of the routers on the map: the databases, or made-up places on the simulated
+    /// network.
+    geo: Arc<GeoState>,
 }
 
 /// A poisoned lock still holds usable data: a panic in one command must not stop the others.
@@ -291,6 +296,7 @@ impl Core {
         let pins = store.pins().map_err(db)?;
         let settings = load_settings(&store.settings().map_err(db)?);
         let recent = store.recent().map_err(db)?;
+        let geo = Arc::new(GeoState::new(&db_path, net.simulated));
         Ok(Arc::new(Core {
             db_path,
             notify,
@@ -313,6 +319,7 @@ impl Core {
             ),
             settings: Mutex::new(settings),
             recent: Mutex::new(recent),
+            geo,
         }))
     }
 
@@ -801,9 +808,11 @@ fn compute(
                     by_probe: BTreeMap::from([(probe.clone(), status.to_string())]),
                     stats: d.stats,
                     range_stats: d.range_stats,
+                    geo: None,
                 }
             })
             .collect(),
+        home: None,
     });
     Computed {
         row,
@@ -915,6 +924,16 @@ impl Core {
             }
         }
         order.sort_by_key(|(pos, kind, id, _)| (*pos, *kind, *id));
+        // Places of the routers, after the loop: no target's data is locked here.
+        if let Some(t) = trace.as_mut() {
+            let row = order.iter().map(|o| &o.3).find(|r| r.id == t.target);
+            let settings = lock(&self.settings).clone();
+            self.geo
+                .enrich_trace(t, row.and_then(|r| r.ip.as_deref()), &settings);
+        }
+        // Not in the literal below: the settings and recent hosts locked there stay locked until
+        // the function returns, and the places may wait for a finished download.
+        let geo = self.geo.status();
         Ok(Snapshot {
             n: f.n as u32,
             now_ms: now,
@@ -935,6 +954,7 @@ impl Core {
             probes_available: vec![ProbeKind::Icmp.as_str().into()],
             rate_pps: (rate * 10.0).round() / 10.0,
             recent: lock(&self.recent).clone(),
+            geo,
         })
     }
 }
@@ -1193,6 +1213,7 @@ fn apply_settings(s: &mut Settings, p: &SettingsPatch) -> Vec<(&'static str, Str
         s.window = v.into();
         changed.push(("window", format!("\"{v}\"")));
     }
+    geo::apply_settings(s, p, &mut changed);
     changed
 }
 
@@ -1207,7 +1228,7 @@ fn load_settings(saved: &[(String, String)]) -> Settings {
             "theme" => p.theme = v.as_str().map(String::from),
             "lang" => p.lang = v.as_str().map(String::from),
             "window" => p.window = v.as_str().map(String::from),
-            _ => {}
+            _ => geo::load_setting(&mut p, key, &v),
         }
     }
     let mut s = Settings::default();
@@ -1357,6 +1378,8 @@ impl Core {
 
         let generated_ms = now_ms();
         let lang = lock(&self.settings).lang.clone();
+        // The route map the interface drew: map.png, and inline in report.html.
+        let map = req.map_png_base64.as_deref().and_then(geo::png_of);
         let doc = Document {
             sections: datas
                 .iter()
@@ -1402,6 +1425,7 @@ impl Core {
                     .collect(),
             ),
             lang: &lang,
+            map_png: map.as_deref(),
         };
 
         let formats: Vec<&str> = {
@@ -1438,6 +1462,9 @@ impl Core {
                 }
                 _ => {}
             }
+        }
+        if let Some(png) = &map {
+            files.push(("map.png", png.clone()));
         }
 
         let base: PathBuf = match req.dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
@@ -1615,6 +1642,7 @@ fn main() {
             } else {
                 Core::open(default_db_path(), notify)?
             };
+            geo::wire_app(app, &core.geo);
             core.start_saved()?;
             if let Some(window) = app.get_webview_window("main") {
                 let (theme, lang) = {
@@ -1654,7 +1682,12 @@ fn main() {
             export_report,
             pick_folder,
             open_folder,
-            set_background
+            set_background,
+            geo::geo_check,
+            geo::geo_download,
+            geo::geo_cancel,
+            geo::geo_remove,
+            geo::save_image
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Whilo Trace");
@@ -2126,6 +2159,7 @@ mod tests {
             findings: vec!["Потери начинаются на хопе 3.".into()],
             png_base64: Some("data:image/png;base64,aGk=".into()),
             dir: Some(dir.0.display().to_string()),
+            map_png_base64: None,
         };
         let res = core.export(report_req(), None).unwrap();
         assert_eq!(
@@ -2423,6 +2457,64 @@ mod tests {
         assert_eq!(t.hops.last().unwrap().status, "unreachable");
         assert!(t.hops.iter().all(|h| !h.dest && !h.origin));
 
+        // Made-up places: home in Baku at the provider's core, the home network and the
+        // provider's NAT drawn at home, every city on the way within reach of light in fibre.
+        let snap = snapshot("t1");
+        assert_eq!(snap.geo.state, "simulated");
+        assert_eq!(snap.geo.source.as_deref(), Some("simulated"));
+        let t = snap.trace.unwrap();
+        let home = t.home.clone().unwrap();
+        assert_eq!(
+            (
+                home.city.as_deref(),
+                home.cc.as_deref(),
+                home.source.as_str(),
+                home.ttl
+            ),
+            (Some("Baku"), Some("AZ"), "auto", Some(3))
+        );
+        assert_eq!((home.lat, home.lon), (40.41, 49.87));
+        let place = |ttl: u8| {
+            let hop = t.hops.iter().find(|h| h.ttl == ttl).unwrap();
+            let g = hop.geo.clone().unwrap();
+            (g.level, g.special)
+        };
+        assert_eq!(place(1), ("own".into(), Some("private".into())));
+        assert_eq!(place(2), ("own".into(), Some("cgnat".into())));
+        let checked: Vec<(u8, contract::HopGeo)> = t
+            .hops
+            .iter()
+            .filter_map(|h| Some((h.ttl, h.geo.clone()?)))
+            .filter(|(_, g)| g.level == "city" && g.verdict.is_some())
+            .collect();
+        for (ttl, g) in &checked {
+            assert_eq!(g.verdict.as_deref(), Some("ok"), "hop {ttl}: {g:?}");
+            assert!(g.special.is_none(), "hop {ttl}: {g:?}");
+        }
+        // The provider's core (TTL 3 and 4), transit routers on the way, and the destination.
+        let dest_ttl = t.hops.iter().find(|h| h.dest).unwrap().ttl;
+        let ttls: Vec<u8> = checked.iter().map(|(ttl, _)| *ttl).collect();
+        assert!(ttls.starts_with(&[3, 4]), "{ttls:?}");
+        assert!(ttls.contains(&dest_ttl), "{ttls:?}");
+        assert!(ttls.iter().any(|&x| x > 4 && x < dest_ttl), "{ttls:?}");
+        assert!(
+            checked
+                .iter()
+                .any(|(_, g)| g.dist_km.is_some_and(|d| d > 100.0)),
+            "{checked:?}"
+        );
+        // No update on the simulated network, whatever it is given: nothing reaches the network.
+        let remote = Arc::new(geo::testing::FakeRemote::default());
+        let given: Arc<dyn geo::Remote> = remote.clone();
+        core.geo.wire(None, Some(given), geo::testing::quiet());
+        let res = core
+            .geo
+            .check(true, std::time::SystemTime::now(), "2026-10-28");
+        assert_eq!((res.offer, res.reason.as_str()), (None, "simulated"));
+        assert_eq!(core.geo.download("2026-11").unwrap_err(), "geo_unavailable");
+        assert_eq!(core.geo.remove().unwrap_err(), "geo_unavailable");
+        assert!(remote.checks().is_empty() && remote.downloads() == 0);
+
         let res = core
             .export(
                 ReportReq {
@@ -2434,6 +2526,7 @@ mod tests {
                     findings: Vec::new(),
                     png_base64: None,
                     dir: Some(dir.0.display().to_string()),
+                    map_png_base64: None,
                 },
                 None,
             )
@@ -2443,6 +2536,421 @@ mod tests {
         assert!(html.contains(simulated_note("ru")));
         assert!(html.contains("cgnat.provider.example"));
         drop(s);
+        shut_down(core);
+    }
+
+    use contract::HomeSetting;
+    use geo::testing::{bundle, quiet};
+
+    /// The route of the map tests: an address and the round trip in ms per TTL, none for a
+    /// hop that never answers. The places are those of `geo::testing::city_db`.
+    const ROUTE: [Option<(&str, f64)>; 7] = [
+        Some(("192.168.1.1", 1.0)),
+        // Baku: home.
+        Some(("5.0.20.1", 3.0)),
+        Some(("5.0.10.1", 40.0)),
+        None,
+        // Only its country is known.
+        Some(("5.0.30.1", 45.0)),
+        // Not in the database.
+        Some(("5.0.50.1", 48.0)),
+        // Mountain View, too far for 50 ms.
+        Some(("5.0.40.5", 50.0)),
+    ];
+
+    /// A round along ROUTE, the last hop the destination; `extra_ms` is added to every round
+    /// trip.
+    fn round_via(ts_ms: i64, extra_ms: f64) -> RoundRecord {
+        let n = ROUTE.len() as u8;
+        let hops = ROUTE
+            .iter()
+            .enumerate()
+            .map(|(i, hop)| {
+                let ttl = i as u8 + 1;
+                let Some((addr, ms)) = hop else {
+                    return HopSample::lost(ttl, ReplyKind::Timeout);
+                };
+                HopSample {
+                    ttl,
+                    kind: if ttl == n {
+                        ReplyKind::Echo
+                    } else {
+                        ReplyKind::TimeExceeded
+                    },
+                    addr: Some(addr.parse().unwrap()),
+                    rtt_us: Some(((ms + extra_ms) * 1000.0).round() as u32),
+                }
+            })
+            .collect();
+        RoundRecord {
+            ts_ms,
+            probe: ProbeKind::Icmp,
+            dst: "5.0.40.5".parse().unwrap(),
+            path_len: n,
+            reached: true,
+            hops,
+        }
+    }
+
+    /// A core with the paused target 5.0.40.5 and five minutes of rounds along ROUTE. Hop
+    /// names come from nowhere: no lookup of these addresses leaves the machine.
+    fn route_core(dir: &TempDir) -> Arc<Core> {
+        let db_path = dir.0.join("history.db");
+        let now = now_ms();
+        {
+            let mut s = Store::open(&db_path).unwrap();
+            let id = s.add_target("5.0.40.5").unwrap();
+            s.set_paused(id, true).unwrap();
+            for k in 0..60 {
+                // The minimum over the window is the round trip of ROUTE.
+                let extra = (k % 3) as f64 * 0.5;
+                s.insert_round(id, &round_via(now - 300_000 + k * 5000, extra))
+                    .unwrap();
+            }
+        }
+        let probes = Arc::new(AtomicUsize::new(0));
+        let net = Net {
+            prober: Some(fake_backend(&probes)),
+            resolve: Arc::new(resolve_v4),
+            dns: DnsCache::with_lookup(|_| None),
+            simulated: false,
+        };
+        let core = Core::open_net(db_path, Arc::new(|_| {}), net).unwrap();
+        core.start_saved().unwrap();
+        let data = lock(&core.targets).values().next().unwrap().data.clone();
+        wait_for(20, "history did not load", || lock(&data).hist.len() >= 60);
+        assert_eq!(probes.load(Ordering::SeqCst), 0, "a paused target");
+        core
+    }
+
+    fn trace_of(core: &Core) -> (Trace, contract::GeoStatus) {
+        let mut r = req("10m", None);
+        r.trace = Some("t1".into());
+        let snap = core.snapshot(&r).unwrap();
+        (snap.trace.unwrap(), snap.geo)
+    }
+
+    fn patch(json: &str) -> SettingsPatch {
+        serde_json::from_str(json).unwrap()
+    }
+
+    /// The trace gets places from the bundled databases: home, distances and the
+    /// speed-of-light check from each hop's minimum round trip over the window.
+    #[test]
+    fn a_trace_gets_places_from_the_databases() {
+        let dir = temp_dir("geo-places");
+        let core = route_core(&dir);
+        let bundled = dir.0.join("bundled");
+        bundle(&bundled, Some("2026-10"));
+        core.geo.wire(Some(bundled), None, quiet());
+
+        // The main screen: found, not opened before a trace needs it.
+        let main = core.snapshot(&req("10m", None)).unwrap();
+        assert!(main.trace.is_none());
+        let found = contract::GeoStatus {
+            state: "ok".into(),
+            month: Some("2026-10".into()),
+            source: Some("bundled".into()),
+            download: None,
+        };
+        assert_eq!(main.geo, found);
+        assert_eq!(
+            serde_json::to_value(&main).unwrap()["geo"],
+            serde_json::json!({"state": "ok", "month": "2026-10", "source": "bundled", "download": null})
+        );
+
+        let (t, status) = trace_of(&core);
+        assert_eq!(status, found);
+        assert_eq!(
+            t.home,
+            Some(contract::TraceHome {
+                lat: 40.41,
+                lon: 49.87,
+                city: Some("Baku".into()),
+                cc: Some("AZ".into()),
+                country: Some("Азербайджан".into()),
+                source: "auto".into(),
+                ttl: Some(2),
+            })
+        );
+        let geo = |ttl: u8| t.hops[ttl as usize - 1].geo.clone();
+        assert_eq!(
+            geo(1),
+            Some(contract::HopGeo {
+                level: "own".into(),
+                special: Some("private".into()),
+                ..Default::default()
+            })
+        );
+        let baku = geo(2).unwrap();
+        assert_eq!(
+            (
+                baku.level.as_str(),
+                baku.city.as_deref(),
+                baku.region.as_deref()
+            ),
+            ("city", Some("Baku"), Some("Baku"))
+        );
+        assert_eq!(
+            (baku.asn, baku.as_org.as_deref()),
+            (Some(64500), Some("Demo provider"))
+        );
+        assert_eq!(
+            (
+                baku.dist_km,
+                baku.rtt_ms,
+                baku.extra_ms,
+                baku.verdict.as_deref()
+            ),
+            (Some(0.0), Some(3.0), Some(3.0), Some("ok"))
+        );
+        // Frankfurt: 40 ms is more than light in fibre needs for about 3350 km and back.
+        let fra = geo(3).unwrap();
+        assert_eq!(fra.country.as_deref(), Some("Германия"));
+        let km = fra.dist_km.unwrap();
+        assert!((3300.0..3400.0).contains(&km), "{km}");
+        let fiber = fra.fiber_ms.unwrap();
+        assert!((fiber - km / 99.93).abs() < 0.02, "{fiber}");
+        assert!(fra.vacuum_ms.unwrap() < fiber);
+        assert_eq!(fra.rtt_ms, Some(40.0), "the minimum over the window");
+        assert!((fra.extra_ms.unwrap() - (40.0 - fiber)).abs() < 0.02);
+        assert_eq!(fra.verdict.as_deref(), Some("ok"));
+        // A hop that never answered has no place.
+        assert_eq!(t.hops[3].addr, None);
+        assert_eq!(geo(4), None);
+        // Only the country: no check.
+        let bg = geo(5).unwrap();
+        assert_eq!(
+            (
+                bg.level.as_str(),
+                bg.cc.as_deref(),
+                bg.country.as_deref(),
+                bg.city
+            ),
+            ("country", Some("BG"), Some("Болгария"), None)
+        );
+        assert_eq!((bg.dist_km, bg.verdict), (None, None));
+        // A public address the database does not know.
+        assert_eq!(
+            geo(6),
+            Some(contract::HopGeo {
+                level: "none".into(),
+                ..Default::default()
+            })
+        );
+        // The destination: Mountain View is farther than light in vacuum gets in 50 ms.
+        let dst = geo(7).unwrap();
+        assert_eq!(dst.city.as_deref(), Some("Mountain View"));
+        assert_eq!(
+            (dst.asn, dst.as_org.as_deref()),
+            (Some(15169), Some("Google LLC"))
+        );
+        assert!(dst.vacuum_ms.unwrap() > 51.0);
+        assert_eq!(
+            (dst.verdict.as_deref(), dst.extra_ms),
+            (Some("impossible"), None)
+        );
+
+        // The JSON the interface reads.
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["home"]["source"], "auto");
+        assert_eq!(json["hops"][3].get("geo"), Some(&serde_json::Value::Null));
+        let fra = &json["hops"][2]["geo"];
+        for key in ["distKm", "fiberMs", "vacuumMs", "rttMs", "extraMs"] {
+            assert!(fra[key].is_number(), "{key}");
+        }
+        assert_eq!(fra["asOrg"], "Transit DE");
+        assert_eq!(json["hops"][4]["geo"]["verdict"], serde_json::Value::Null);
+
+        // Country names follow the interface language.
+        core.change_settings(&patch(r#"{"lang":"en"}"#)).unwrap();
+        let (t, _) = trace_of(&core);
+        assert_eq!(
+            t.home.as_ref().unwrap().country.as_deref(),
+            Some("Azerbaijan")
+        );
+        assert_eq!(
+            t.hops[2].geo.as_ref().unwrap().country.as_deref(),
+            Some("Germany")
+        );
+
+        // A home put by hand: Frankfurt. Baku is then 3350 km away, too far for 3 ms.
+        core.change_settings(&patch(r#"{"home":{"lat":50.1109,"lon":8.6821}}"#))
+            .unwrap();
+        let (t, _) = trace_of(&core);
+        assert_eq!(
+            t.home,
+            Some(contract::TraceHome {
+                lat: 50.1,
+                lon: 8.7,
+                city: None,
+                cc: None,
+                country: None,
+                source: "manual".into(),
+                ttl: None,
+            })
+        );
+        let baku = t.hops[1].geo.clone().unwrap();
+        assert_eq!(baku.verdict.as_deref(), Some("impossible"));
+        let fra = t.hops[2].geo.clone().unwrap();
+        assert!(fra.dist_km.unwrap() < 5.0, "{fra:?}");
+        assert_eq!(fra.verdict.as_deref(), Some("ok"));
+        core.change_settings(&patch(r#"{"home":null}"#)).unwrap();
+        assert_eq!(trace_of(&core).0.home.unwrap().source, "auto");
+        shut_down(core);
+    }
+
+    /// Without databases, or with ones that do not open, the trace has no places; the home
+    /// network is still drawn at home.
+    #[test]
+    fn missing_and_unreadable_databases_leave_the_map_without_places() {
+        let dir = temp_dir("geo-none");
+        let core = route_core(&dir);
+        core.geo.wire(Some(dir.0.join("nowhere")), None, quiet());
+        let (t, status) = trace_of(&core);
+        assert_eq!(status, contract::GeoStatus::default());
+        assert_eq!(status.state, "missing");
+        assert_eq!(t.home, None);
+        let level = |t: &Trace, i: usize| t.hops[i].geo.as_ref().map(|g| g.level.clone());
+        assert_eq!(level(&t, 0).as_deref(), Some("own"));
+        for i in [1, 2, 4, 5, 6] {
+            assert_eq!(level(&t, i).as_deref(), Some("none"), "hop {}", i + 1);
+        }
+        assert_eq!(level(&t, 3), None);
+
+        // A City file that is not a database.
+        let broken = dir.0.join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("dbip-city-lite.mmdb"), b"not a database").unwrap();
+        std::fs::write(broken.join("manifest.json"), br#"{"month":"2026-10"}"#).unwrap();
+        core.geo.wire(Some(broken), None, quiet());
+        assert_eq!(core.snapshot(&req("10m", None)).unwrap().geo.state, "ok");
+        let (t, status) = trace_of(&core);
+        assert_eq!(
+            (
+                status.state.as_str(),
+                status.source.as_deref(),
+                status.month.as_deref()
+            ),
+            ("unreadable", Some("bundled"), Some("2026-10"))
+        );
+        assert_eq!(t.home, None);
+        assert_eq!(level(&t, 2).as_deref(), Some("none"));
+        // It stays unreadable: no new attempt on every snapshot.
+        assert_eq!(trace_of(&core).1.state, "unreadable");
+        shut_down(core);
+    }
+
+    #[test]
+    fn map_settings_are_kept_in_the_database() {
+        let dir = temp_dir("geo-settings");
+        let db_path = dir.0.join("history.db");
+        let probes = Arc::new(AtomicUsize::new(0));
+        let core = Core::open_with(
+            db_path.clone(),
+            Arc::new(|_| {}),
+            Some(fake_backend(&probes)),
+        )
+        .unwrap();
+        let s = lock(&core.settings).clone();
+        assert!(s.geo_check && s.home.is_none());
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["geoCheck"], true);
+        assert!(json.get("home").is_some_and(|h| h.is_null()));
+
+        let s = core
+            .change_settings(&patch(
+                r#"{"geoCheck":false,"home":{"lat":40.4093,"lon":49.8671}}"#,
+            ))
+            .unwrap();
+        let rounded = Some(HomeSetting {
+            lat: 40.4,
+            lon: 49.9,
+        });
+        assert_eq!((s.geo_check, s.home), (false, rounded));
+        let saved = || load_settings(&Store::open(&db_path).unwrap().settings().unwrap());
+        assert_eq!((saved().geo_check, saved().home), (false, rounded));
+        // A patch without the key leaves the home as it is; null clears it, on disk too.
+        core.change_settings(&patch(r#"{"lang":"en"}"#)).unwrap();
+        assert_eq!(saved().home, rounded);
+        core.change_settings(&patch(r#"{"home":null}"#)).unwrap();
+        assert_eq!(saved().home, None);
+        assert!(!saved().geo_check);
+        let back: Vec<(String, String)> = Store::open(&db_path).unwrap().settings().unwrap();
+        assert!(back.contains(&("home".into(), "null".into())), "{back:?}");
+        // Saved values that do not fit are left at their defaults.
+        let s = load_settings(&[
+            ("geoCheck".into(), "\"no\"".into()),
+            ("home".into(), r#"{"lat":"x"}"#.into()),
+        ]);
+        assert!(s.geo_check && s.home.is_none());
+        let s = load_settings(&[("home".into(), r#"{"lat":95,"lon":0}"#.into())]);
+        assert!(s.home.is_none());
+        drop(core);
+    }
+
+    /// The report for the provider shows the route map inline, credits DB-IP for its places
+    /// and keeps the picture as map.png.
+    #[test]
+    fn a_report_with_the_route_map() {
+        let dir = temp_dir("geo-report");
+        let core = route_core(&dir);
+        // The interface may leave the map out.
+        let req = |map: &str| {
+            let json = format!(
+                r#"{{"rows":["t1"],"fromMs":0,"toMs":1,"formats":["html"],"tzOffsetMin":0,"pngBase64":null,"dir":null{map}}}"#
+            );
+            serde_json::from_str::<ReportReq>(&json).unwrap()
+        };
+        assert_eq!(req("").map_png_base64, None);
+        assert_eq!(
+            req(r#","mapPngBase64":"data:image/png;base64,iVBO""#).map_png_base64,
+            Some("data:image/png;base64,iVBO".to_string())
+        );
+        // A picture of 1 x 1 pixels.
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+        let export = |map: Option<String>, formats: &[&str]| {
+            core.export(
+                ReportReq {
+                    rows: vec!["t1".into()],
+                    from_ms: now_ms() - 600_000,
+                    to_ms: now_ms(),
+                    formats: formats.iter().map(|f| f.to_string()).collect(),
+                    tz_offset_min: 240,
+                    findings: Vec::new(),
+                    png_base64: None,
+                    dir: Some(dir.0.display().to_string()),
+                    map_png_base64: map,
+                },
+                None,
+            )
+            .unwrap()
+        };
+        let res = export(
+            Some(format!("data:image/png;base64,{png}")),
+            &["html", "csv"],
+        );
+        assert_eq!(
+            res.files,
+            ["report.html", "hops.csv", "samples.csv", "map.png"]
+        );
+        let out = PathBuf::from(&res.dir);
+        let bytes = decode_base64(png).unwrap();
+        assert_eq!(std::fs::read(out.join("map.png")).unwrap(), bytes);
+        let html = std::fs::read_to_string(out.join("report.html")).unwrap();
+        assert!(html.contains("<h3>Карта маршрута</h3><figure class=\"map\">"));
+        let inline = html.split("data:image/png;base64,").nth(1).unwrap();
+        let inline = &inline[..inline.find('"').unwrap()];
+        assert_eq!(decode_base64(inline).unwrap(), bytes, "the same picture");
+        assert!(html.contains("IP Geolocation by DB-IP (https://db-ip.com), CC BY 4.0."));
+        // No map, or something that is not a PNG picture: no figure and no credit.
+        for map in [None, Some("data:image/png;base64,aGk=".to_string())] {
+            let res = export(map, &["html"]);
+            assert_eq!(res.files, ["report.html"]);
+            let html =
+                std::fs::read_to_string(PathBuf::from(&res.dir).join("report.html")).unwrap();
+            assert!(!html.contains("<figure") && !html.contains("DB-IP"));
+        }
         shut_down(core);
     }
 }

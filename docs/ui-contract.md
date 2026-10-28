@@ -1,7 +1,7 @@
 # Interface contract
 
 How the interface (`app/ui`) talks to the core (`app/src`). The interface calls Tauri commands through
-`base/api.js` and listens to one event. In a plain browser the same calls go to `base/mock.js`, which
+`base/api.js` and listens to two events. In a plain browser the same calls go to `base/mock.js`, which
 answers with the mockup scenario, so the interface can be built and checked without the core.
 
 Types live in `app/src/contract.rs`. JSON keys are camelCase. Command arguments are camelCase too
@@ -24,7 +24,13 @@ system's own message, in the system's language.
 | `no_such_hop` | `pin_hop`, `unpin_hop` | the TTL did not answer lately, or the pinned hop is gone |
 | `not_implemented` | none now | kept for a command a build does not have |
 | `db: <detail>` | any command, `Row.error` | the history database could not be read or written |
-| `io: <detail>` | `export_report`, `open_folder`, `Row.error` | files and folders; anything else the core cannot sort |
+| `io: <detail>` | `export_report`, `open_folder`, `save_image`, `geo_remove`, `Row.error`, `Snapshot.geo.download.error` | files and folders; anything else the core cannot sort |
+| `geo_busy` | `geo_download`, `geo_remove` | a download of the places database is running already |
+| `geo_unavailable` | `geo_download`, `geo_remove` | no updates here: the simulated network (`WHILO_TRACE_SIMULATE`) never reaches DB-IP, and its places are made up |
+| `geo_invalid: <detail>` | `geo_download`, `Snapshot.geo.download.error` | not a month, not newer than the database in use, or a downloaded file that is not the database it should be |
+| `geo_cancelled` | `Snapshot.geo.download.error`, event `geo` | the user stopped the download (`geo_cancel`) |
+| `net: <detail>` | `Snapshot.geo.download.error`, event `geo` | no connection to DB-IP: no network, a timeout, TLS |
+| `http: <status>` | `Snapshot.geo.download.error`, event `geo` | DB-IP answered with this status (`http: 404`: the month is not out) |
 | `core_unavailable` | the interface only | no snapshot came from the core; the core never sends it |
 
 ## Commands
@@ -46,9 +52,18 @@ system's own message, in the system's language.
 | `pick_folder` | `{}` | `string` or `null` (folder dialog) |
 | `open_folder` | `{ path }` | `null`; a folder opens in the file manager, a file of a report (`.html`, `.png`, `.csv`, `.json`) in its default program; any other path is `io: ...` |
 | `set_background` | `{ dark }` | `null`; the window behind the page takes the page's background (`--bg`), so its edges stay in the theme while it grows. `base/theme.js` calls it when the shown theme changes; the core sets it from the saved theme at start |
+| `geo_check` | `{}` | `{ offer, reason }`: whether a newer places database is out (see Places database). At most one answered request a day: a check that failed (no network, a server error) is asked again at the next call. None on the simulated network |
+| `geo_download` | `{ month }` | `null` at once; the download runs on its own and reports through the event `geo` and `Snapshot.geo.download`. Only a month newer than the database in use; `geo_busy`, `geo_unavailable`, `geo_invalid: ...` |
+| `geo_cancel` | `{}` | `null`; the running download ends as `cancelled` |
+| `geo_remove` | `{}` | `null`; deletes the downloaded database and goes back to the bundled one. The days of the last check and offer stay: an update offered or checked today is not offered again today; `geo_busy` during a download |
+| `save_image` | `{ dir, name, pngBase64 }` | `{ path }`; the picture of the map as `<name>.png` in `dir` (`null`: Documents/Whilo Trace, as for reports). Never overwrites a file (see below); `io: ...` |
 
 Event `round`: a target finished a round, payload is its numeric target id. The interface asks for a new
 snapshot at most once a second, and only while it shows live data (`base/live.js`).
+
+Event `geo`: a download of the places database goes on; the payload is the `download` object of
+`Snapshot.geo` (below). It comes when the download starts, at most every 250 ms while it runs, and once
+when it ends (`done`, `failed` or `cancelled`), also in past mode, when no snapshots come.
 
 A target saved on pause starts paused after a restart: no probe and no DNS lookup until `set_paused`
 resumes it, then at its saved interval.
@@ -79,8 +94,12 @@ resumes it, then at its saved interval.
   "trace": null,
   "history": { "fromMs": 1793016000000, "toMs": 1793102400000, "slots": 200, "loss": [8, 9, 31] },
   "loss": [],
-  "settings": { "warnMs": 100, "badMs": 200, "theme": "system", "lang": "ru", "window": "10m" },
-  "probesAvailable": ["icmp"], "ratePps": 18, "recent": ["1.1.1.1", "8.8.8.8"]
+  "settings": { "warnMs": 100, "badMs": 200, "theme": "system", "lang": "ru", "window": "10m",
+                "geoCheck": true, "home": null },
+  "probesAvailable": ["icmp"], "ratePps": 18, "recent": ["1.1.1.1", "8.8.8.8"],
+  "geo": { "state": "ok", "month": "2026-10", "source": "bundled",
+           "download": { "state": "running", "month": "2026-11", "received": 1234, "total": 65000000,
+                         "error": null } }
 }
 ```
 
@@ -94,6 +113,19 @@ resumes it, then at its saved interval.
 - `history`: 24 hours that end at `toMs`, 200 slots; a slot is listed when any row lost probes in it.
 - `loss` and `ticks`: only the mock sends them (to reproduce the mockups); the interface computes time
   labels from `toMs` (`WT.ticksAt`).
+- `geo`: the places database of the route map (DB-IP City Lite and ASN Lite), in every snapshot.
+  - `state`: `ok`; `missing` (there is none: the program came without one, or it was deleted);
+    `unreadable` (the files are there but do not open; found out when a trace first needs them, `ok`
+    until then); `simulated` (the simulated network: every place is made up, nothing is downloaded).
+  - `month`: release month of the database in use, `null` without one. With `unreadable`, the month of
+    the set that does not open.
+  - `source`: `bundled` (came with the program), `downloaded` (an update, kept in `geo-update` in the
+    data folder), `simulated`; `null` without a database.
+  - `download`: the last download of this run, `null` before one and after `geo_remove`. `state`:
+    `running`, `done`, `failed`, `cancelled`. `received` and `total` are bytes of both files; `total`
+    is `null` when the server does not tell their sizes. `error`: an error code (`net: ...`,
+    `http: 404`, `geo_invalid: ...`, `io: ...`, `geo_cancelled`) or `null`. When a download is `done`,
+    the snapshots show the new `month` and `source` at once.
 
 ### Row
 
@@ -160,12 +192,50 @@ resumes it, then at its saved interval.
   "ttl": 7, "addr": "10.200.0.7", "name": null, "status": "loss", "origin": true, "dest": false,
   "max": 10, "series": [...], "lo": [...], "hi": [...], "loss": [16, 17], "partial": [],
   "sentN": [...], "lostN": [...], "byProbe": { "icmp": "loss" }, "stats": { ... },
-  "rangeStats": { ..., "status": "loss" } } ] }
+  "rangeStats": { ..., "status": "loss" },
+  "geo": { "level": "own", "special": "private", "city": null, "region": null, "cc": null,
+           "country": null, "lat": null, "lon": null, "asn": null, "asOrg": null, "distKm": null,
+           "fiberMs": null, "vacuumMs": null, "rttMs": null, "extraMs": null, "verdict": null } },
+  { "ttl": 9, "addr": "80.81.192.10", ...,
+    "geo": { "level": "city", "special": null, "city": "Frankfurt am Main", "region": "Hesse",
+             "cc": "DE", "country": "Германия", "lat": 50.11, "lon": 8.68, "asn": 64504,
+             "asOrg": "Transit DE", "distKm": 3350.2, "fiberMs": 33.53, "vacuumMs": 22.35,
+             "rttMs": 52.4, "extraMs": 18.87, "verdict": "ok" } } ],
+  "home": { "lat": 40.41, "lon": 49.87, "city": "Baku", "cc": "AZ", "country": "Азербайджан",
+            "source": "auto", "ttl": 3 } }
 ```
 
 - `rounds`: rounds of the window. The rounds of a picked period are the target row's `rangeStats.sent`.
 - Hops have the same fields as rows; `status`, `origin` and `dest` are for the whole window, the status
   over a picked period is `rangeStats.status`.
+- `home`: where the path starts on the route map, `null` without one. `source: "auto"`: the first hop in
+  TTL order placed in a city; never the destination, nor a hop that answered with the target's address.
+  `ttl` is that hop. `source: "manual"`: `settings.home`; `city`, `cc`, `country` and `ttl` are `null`
+  then. `lat` and `lon` are rounded to 0.01°. Distances on the map count from here.
+- `hops[].geo`: the place of the hop and its speed-of-light check. `null` for a hop without an address,
+  and on every hop when the trace has no target address (no destination hop with an address and no `ip`
+  on the row); the interface places such hops, and hops with `level: "none"`, between their neighbours.
+  - `level`: `own` (the home network or the provider's carrier-grade NAT: drawn at home, never looked
+    up), `city`, `country` (only the country is known), `none` (no place). Without a usable database
+    (`Snapshot.geo.state` `missing` or `unreadable`) every hop with an address still has `geo`: `own`
+    hops as always, the others `none`.
+  - `special`: set only for hops that were not looked up: `own` hops (`private`, `cgnat`, `loopback`,
+    `link-local`) and, outside the simulated network, `none` hops in other special-purpose ranges
+    (`documentation`, `benchmarking`, `multicast`, `reserved`, `unspecified`, `broadcast`). A hop that
+    was looked up has `special: null`, also a simulated router in a documentation range: classify hops by
+    `level`, not by `special`.
+  - `city`, `region`: as the database has them (English in DB-IP Lite). `cc`: ISO 3166 alpha-2.
+    `country`: in the interface language (`settings.lang`; Russian falls back to English).
+  - `lat`, `lon`: the point the database gives, rounded to 0.01°, kept when the check finds it
+    impossible. A `country` hop may have a point or not.
+  - `asn`, `asOrg`: the autonomous system, from the ASN database.
+  - `distKm`, `fiberMs`, `vacuumMs`, `rttMs`, `verdict`: only for `city` hops with a home and a round
+    trip: the great-circle distance from home (0.1 km), the shortest round trip over it in fibre (light
+    at c/1.5) and in vacuum, the round trip checked and the verdict (ms to 0.01). `rttMs` is the hop's
+    minimum over the window (`stats.min`), never over a picked period. `verdict`: `ok`; `doubtful`
+    (faster than light in fibre goes there and back, with 1 ms of tolerance); `impossible` (faster than
+    light in vacuum). The home hop is 0 km away and `ok`. `country`, `own` and `none` hops get no check.
+  - `extraMs`: how much longer than light in fibre the answer took; only with `verdict: "ok"`.
 
 ## Bucket rules
 
@@ -187,9 +257,14 @@ resumes it, then at its saved interval.
 
 ## Settings
 
-`{ warnMs: 100, badMs: 200, theme: "system" | "light" | "dark", lang: "ru" | "en", window: "10m" }`.
+`{ warnMs: 100, badMs: 200, theme: "system" | "light" | "dark", lang: "ru" | "en", window: "10m",
+geoCheck: true, home: null | { lat, lon } }`.
 Thresholds paint the latency background; language and theme apply to the whole window. `window` is the
 window both screens open with: the main screen and the trace screen save it with `set_settings`.
+`geoCheck`: look for a newer places database when the map opens (`geo_check`). `home`: a home put on the
+map by hand, in degrees rounded to 0.1°; `null` uses the automatic one (`Trace.home`). In `set_settings`
+a missing `home` key leaves it as it is, `"home": null` clears it, and a point off the globe
+(|lat| > 90 or |lon| > 180) is ignored like any value that does not fit.
 
 ## ReportReq
 
@@ -197,7 +272,8 @@ window both screens open with: the main screen and the trace screen save it with
 { "rows": ["t12", "p7"], "fromMs": 1793101800000, "toMs": 1793102400000,
   "formats": ["html", "png", "csv", "json"], "tzOffsetMin": 240,
   "findings": ["1.1.1.1, ICMP: потери до цели 5,8 % за 240 раундов, начинаются на хопе 7 (10.200.0.7)."],
-  "pngBase64": "data:image/png;base64,...", "dir": null }
+  "pngBase64": "data:image/png;base64,...", "dir": null,
+  "mapPngBase64": "data:image/png;base64,..." }
 ```
 
 Returns `{ "dir": "C:\\Users\\...\\Documents\\Whilo Trace\\whilo-trace-20261027-160000", "files": ["report.html", ...] }`.
@@ -211,7 +287,49 @@ Returns `{ "dir": "C:\\Users\\...\\Documents\\Whilo Trace\\whilo-trace-20261027-
   is the target's host when every row belongs to one target, else `whilo-trace`; the time is `toMs` in
   `tzOffsetMin`. A folder that exists already is not overwritten: the next one is `<name>-<time>-2`.
 - `files`: what was written, of `report.html`, `timeline.png` (only with `pngBase64`), `hops.csv` and
-  `samples.csv` (`csv`), `report.json`.
+  `samples.csv` (`csv`), `report.json`, and last `map.png` (only with `mapPngBase64`).
+- `mapPngBase64`: the route map drawn by the interface, a PNG as base64 or a `data:` URL; optional. The
+  folder gets it as `map.png`, and `report.html` shows the same picture inline (the page stays one file)
+  in a «Карта маршрута» / "Route map" figure above the charts, with the credit
+  `IP Geolocation by DB-IP (https://db-ip.com), CC BY 4.0` in its footer. Anything that is not a PNG is
+  left out, as a `pngBase64` that does not decode is.
 - The HTML page is in the interface language. Status names are neutral and name the probe type of the
   data, as the interface does (`не отвечает на ICMP`, `No reply to ICMP`); CSV and JSON are in English
   with times in UTC.
+
+## Places database
+
+`geo_check` answers `{ "offer": null | { "month": "2026-11", "bytes": 61234567 }, "reason": "..." }`.
+The core goes through these in order and stops at the first that holds:
+
+| `reason` | When | Request |
+|---|---|---|
+| `simulated` | the simulated network | never |
+| `disabled` | `settings.geoCheck` is off | none |
+| `asked` | an update was offered today already | none |
+| `cached` | the server was asked today already | none |
+| `current` | the database in use is of the current month (UTC), or later | none |
+| `offer` | the server has the current month: `offer` is set | one |
+| `none` | the server has nothing newer yet | one |
+| `missing` | there is no database (or it does not open), and the server has none out for this month yet | one |
+| `error` | the check failed (no network, a server error); the interface shows nothing | one |
+
+- One request is a HEAD (or a 1-byte range GET) of the City file of the current month on
+  download.db-ip.com. With no database at all the check still goes out, and an offer downloads the
+  current month.
+- `bytes`: the compressed size of the City file when the server tells it, else `null`; the ASN file adds
+  about 5 MB. A size hint only.
+- Days are local dates, kept in `geo-update/state.json` in the data folder: the day of the last answer
+  from the server (`cached`) and of the last offer (`asked`). A failed check is not remembered, so the
+  next one asks again. `geo_remove` keeps them.
+- `geo_download` fetches the City and ASN files of `month` into `geo-update`, unpacked and checked,
+  under new names; the new database is used as soon as the download is `done`, and older downloaded
+  months are deleted. The bundled database (`geo` among the program's files) is never written to.
+
+`save_image` writes `<name>.png`: in `name`, every character but ASCII letters, digits, `-`, `_` and `.`
+becomes `_`, dots and underscores at either end are dropped, a `.png` at the end is not doubled, at most
+120 characters are kept, and Windows device names (`CON`, `NUL`, ...) get a `_` in front; an empty name
+is `whilo-trace-map`. A file of
+that name is never overwritten: the picture becomes `<name>-2.png`, `<name>-3.png` and so on. `pngBase64`
+is a PNG as base64 or a `data:` URL; anything else is `io: not a PNG picture`. `open_folder` opens the
+saved picture or its folder.

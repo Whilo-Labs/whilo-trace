@@ -21,3 +21,11 @@ serde.workspace = true
 serde_json.workspace = true
 whilo-trace-engine.workspace = true
 whilo-trace-store.workspace = true
+whilo-trace-geo.workspace = true
+
+# The local date of the once-a-day update check (`localtime_r`).
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+mmdb-writer.workspace = true
