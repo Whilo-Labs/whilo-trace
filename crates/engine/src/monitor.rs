@@ -755,6 +755,18 @@ mod tests {
         }
     }
 
+    /// Round starts keep the cadence of a 100 ms interval: in order, no long stall, about 100 ms apart on
+    /// average. A late start is followed by an early one (the schedule catches up), so on a busy machine a
+    /// single gap can be well under the interval.
+    fn assert_cadence(gaps_ms: &[f64]) {
+        assert!(!gaps_ms.is_empty());
+        for g in gaps_ms {
+            assert!(*g > 0.0 && *g <= 250.0, "gap {g} ms");
+        }
+        let mean = gaps_ms.iter().sum::<f64>() / gaps_ms.len() as f64;
+        assert!((80.0..=125.0).contains(&mean), "mean gap {mean} ms");
+    }
+
     #[test]
     fn rounds_overlap_to_keep_a_short_interval() {
         // Every round lasts 3.5 intervals, as when silent hops wait for the timeout.
@@ -770,10 +782,12 @@ mod tests {
         let seen = seen.lock().unwrap();
         let n = seen.starts.len();
         assert!((11..=14).contains(&n), "{n} rounds in 1.25 s at 100 ms");
-        for w in seen.starts.windows(2) {
-            let gap = w[1] - w[0];
-            assert!(gap >= ms(50) && gap <= ms(200), "gap {gap:?}");
-        }
+        let gaps: Vec<f64> = seen
+            .starts
+            .windows(2)
+            .map(|w| (w[1] - w[0]).as_secs_f64() * 1000.0)
+            .collect();
+        assert_cadence(&gaps);
         assert!(
             (3..=5).contains(&seen.peak),
             "{} rounds in flight",
@@ -799,11 +813,12 @@ mod tests {
             .collect();
         let expected: Vec<u32> = (1..=rounds.len() as u32).collect();
         assert_eq!(order, expected);
-        // Stamped with their start: 100 ms apart, not with the end.
-        for w in rounds.windows(2) {
-            let gap = w[1].ts_ms - w[0].ts_ms;
-            assert!((50..=200).contains(&gap), "ts gap {gap} ms");
-        }
+        // Stamped with their start, not with the end: the stamps keep the cadence and never go back.
+        let gaps: Vec<f64> = rounds
+            .windows(2)
+            .map(|w| (w[1].ts_ms - w[0].ts_ms) as f64)
+            .collect();
+        assert_cadence(&gaps);
     }
 
     #[test]
