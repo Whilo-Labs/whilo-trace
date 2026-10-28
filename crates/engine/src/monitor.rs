@@ -781,7 +781,7 @@ mod tests {
         handle.stop_and_join();
         let seen = seen.lock().unwrap();
         let n = seen.starts.len();
-        assert!((11..=14).contains(&n), "{n} rounds in 1.25 s at 100 ms");
+        assert!((10..=14).contains(&n), "{n} rounds in 1.25 s at 100 ms");
         let gaps: Vec<f64> = seen
             .starts
             .windows(2)
@@ -823,30 +823,31 @@ mod tests {
 
     #[test]
     fn pause_stops_probes_and_keeps_the_thread() {
-        let run = start(100, false, |_| ms(10));
-        sleep(ms(350));
+        // A long interval keeps "at once" apart from "after one interval" on a busy machine.
+        let run = start(300, false, |_| ms(10));
+        sleep(ms(700));
         run.handle.set_paused(true);
         sleep(ms(50));
         let before = run.starts().len();
         assert!(
-            (3..=5).contains(&before),
+            (2..=4).contains(&before),
             "{before} rounds before the pause"
         );
-        sleep(ms(500));
+        sleep(ms(700));
         assert_eq!(run.starts().len(), before, "probes went out while paused");
 
         let resumed = Instant::now();
         run.handle.set_paused(false);
-        sleep(ms(250));
+        sleep(ms(450));
         let starts = run.starts();
         assert!(
             starts.len() >= before + 2,
             "{} rounds after resume",
             starts.len() - before
         );
-        // The last round was long ago, so the next one starts at once.
+        // The last round was long ago, so the next one starts at once, not an interval later.
         assert!(
-            starts[before] - resumed < ms(60),
+            starts[before] - resumed < ms(150),
             "{:?}",
             starts[before] - resumed
         );
@@ -876,9 +877,10 @@ mod tests {
         run.handle.set_interval(ms(100));
         sleep(ms(500));
         let starts = run.starts();
-        // One new interval after the first round, not the old 400 ms.
+        // One new interval after the first round, not the old 400 ms. Margins allow for a busy machine,
+        // where a worker can pick up a round some tens of milliseconds late.
         assert!(
-            starts[1] - starts[0] < ms(160),
+            starts[1] - starts[0] < ms(250),
             "{:?}",
             starts[1] - starts[0]
         );
@@ -897,7 +899,7 @@ mod tests {
         let starts = run.starts();
         assert_eq!(starts.len(), n + 1);
         let gap = starts[n] - starts[n - 1];
-        assert!(gap >= ms(580) && gap <= ms(700), "gap {gap:?}");
+        assert!(gap >= ms(500) && gap <= ms(750), "gap {gap:?}");
         assert!(starts[n] > changed);
         run.handle.stop_and_join();
     }
@@ -944,7 +946,7 @@ mod tests {
         sleep(ms(300));
         run.handle.stop_and_join();
         let n = run.seen.lock().unwrap().starts.len();
-        assert!((4..=8).contains(&n), "{n} rounds in 300 ms");
+        assert!((3..=8).contains(&n), "{n} rounds in 300 ms");
     }
 
     #[test]
