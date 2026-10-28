@@ -1,9 +1,20 @@
 name: CI
 
+# Text-only changes (README, docs, screenshots, licenses, issue forms) do not need a build.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE-*"
+      - ".github/ISSUE_TEMPLATE/**"
   pull_request:
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE-*"
+      - ".github/ISSUE_TEMPLATE/**"
 
 permissions:
   contents: read
