@@ -8,11 +8,12 @@
 pub mod dns;
 pub mod monitor;
 pub mod probe;
+pub mod sim;
 pub mod stats;
 
 pub use monitor::{
     now_ms, spawn_monitor, spawn_monitor_with, MonitorConfig, MonitorEvent, MonitorHandle,
-    MonitorOptions, ProbeKind, ProberFactory, RoundRecord, MIN_INTERVAL,
+    MonitorOptions, ProbeKind, ProberFactory, Resolver, RoundRecord, MIN_INTERVAL,
 };
 pub use probe::{HopSample, Prober, ReplyKind, RoundSpec};
 pub use stats::{

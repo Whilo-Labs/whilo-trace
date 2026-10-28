@@ -110,6 +110,37 @@ The commands and data between the interface and the core are in [docs/ui-contrac
 
 </details>
 
+<details>
+<summary>Trying the app on a simulated network</summary>
+
+<br>
+
+Start the desktop app with `WHILO_TRACE_SIMULATE` set to any value but `0`, `false`, `no` or `off`, and it runs on a made-up network built into the engine ([crates/engine/src/sim.rs](crates/engine/src/sim.rs)): the app sends no probe and no DNS query. The history goes to `history-sim.db` next to the real one, the window title says the network is simulated, and so does every report saved there. The command line always uses the real network.
+
+A word in the host name picks what its path does:
+
+| Word | Path |
+|---|---|
+| `loss` | loss on the path from hop 7: a quarter of the rounds lost from there on |
+| `flaky` | loss on the path from hop 3: a third of the rounds, 70 seconds in every 5 minutes |
+| `down` | the destination never answers |
+| `unreachable` | a router reports the destination unreachable |
+| `silent` | a router on the way never answers |
+| `limit` | a router answers only part of the probes sent to it |
+| `far` | a long path, high latency |
+| `jitter` | latency spikes from a hop on |
+
+A word counts when it is a whole part of the name between dots or hyphens: `loss.example`, `down.example`, `my-flaky-host.test`, but not `lossless.example`. Any other name or address gets a mix of its own, the same on every run. Addresses of the home network are one hop away, addresses in 192.0.2.0/24 behave as `down`, and names ending in `.invalid` do not resolve.
+
+From the repository root, after `cargo build --release -p whilo-trace`:
+
+```
+$env:WHILO_TRACE_SIMULATE = 1; .target\release\whilo-trace.exe; Remove-Item Env:WHILO_TRACE_SIMULATE   # PowerShell
+WHILO_TRACE_SIMULATE=1 .target/release/whilo-trace   # bash
+```
+
+</details>
+
 ## Command line
 
 ```
@@ -118,7 +149,7 @@ whilo-trace-cli trace 1.1.1.1
 whilo-trace-cli report 1.1.1.1 --last 6h --tz-offset 240 --out reports
 ```
 
-The app and the command line share one history.
+The app and the command line share one history (the simulated network keeps its own).
 
 ## FAQ
 

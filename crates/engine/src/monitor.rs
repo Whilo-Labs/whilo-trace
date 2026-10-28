@@ -13,6 +13,7 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -57,6 +58,9 @@ impl MonitorConfig {
 /// Opens a probe backend. A monitor opens one per round in flight.
 pub type ProberFactory = Box<dyn Fn() -> io::Result<Box<dyn Prober>> + Send>;
 
+/// Looks a host up. Shared, so one resolver can serve every monitor of an app.
+pub type Resolver = Arc<dyn Fn(&str) -> io::Result<Ipv4Addr> + Send + Sync>;
+
 /// How a monitor starts; `spawn_monitor` takes the defaults. Write it as
 /// `MonitorOptions { paused: true, ..Default::default() }`, so new fields do not break callers.
 #[derive(Default)]
@@ -65,6 +69,9 @@ pub struct MonitorOptions {
     pub paused: bool,
     /// Probe backend; `None` is the platform one (`probe::new_prober`). Tests pass a fake.
     pub prober: Option<ProberFactory>,
+    /// Host lookups; `None` is `resolve_v4`, the system resolver. The simulated network
+    /// (`crate::sim`) passes its own, so no DNS query leaves the computer either.
+    pub resolve: Option<Resolver>,
 }
 
 /// What a round was sent with. Only ICMP echo exists for now; TCP and UDP come later.
@@ -234,6 +241,7 @@ struct Worker {
 struct Planner<F> {
     cfg: MonitorConfig,
     make_prober: ProberFactory,
+    resolve: Resolver,
     on_event: F,
     /// Handed to workers and lookups, which answer through `rx`.
     tx: Sender<Msg>,
@@ -274,6 +282,7 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
             interval: cfg.interval.max(MIN_INTERVAL),
             cfg,
             make_prober: opts.prober.unwrap_or_else(|| Box::new(new_prober)),
+            resolve: opts.resolve.unwrap_or_else(|| Arc::new(resolve_v4)),
             on_event,
             tx,
             rx,
@@ -446,11 +455,11 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
             return;
         }
         self.resolve_at = None;
-        let (host, tx) = (self.cfg.host.clone(), self.tx.clone());
+        let (host, tx, resolve) = (self.cfg.host.clone(), self.tx.clone(), self.resolve.clone());
         let spawned = std::thread::Builder::new()
             .name(format!("resolve {host}"))
             .spawn(move || {
-                let _ = tx.send(Msg::Resolved(resolve_v4(&host).map_err(|e| e.to_string())));
+                let _ = tx.send(Msg::Resolved(resolve(&host).map_err(|e| e.to_string())));
             });
         if let Err(e) = spawned {
             self.resolved(Err(e.to_string()));
@@ -590,7 +599,7 @@ fn next_path_len(known: Option<u8>, record: &RoundRecord) -> Option<u8> {
 
 /// Cuts a round at the destination. Probes with a larger TTL reach the destination too
 /// and add nothing.
-fn assemble(dst: Ipv4Addr, ts_ms: i64, mut samples: Vec<HopSample>) -> RoundRecord {
+pub(crate) fn assemble(dst: Ipv4Addr, ts_ms: i64, mut samples: Vec<HopSample>) -> RoundRecord {
     samples.sort_by_key(|s| s.ttl);
     let end = samples
         .iter()
@@ -741,6 +750,7 @@ mod tests {
         let opts = MonitorOptions {
             paused,
             prober: Some(prober),
+            ..Default::default()
         };
         let handle = spawn_monitor_with(cfg, opts, move |ev| match ev {
             MonitorEvent::Round(x) => r.lock().unwrap().push(x),

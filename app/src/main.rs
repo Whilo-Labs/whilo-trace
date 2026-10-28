@@ -17,11 +17,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use whilo_trace_engine::dns::DnsCache;
+use whilo_trace_engine::monitor::resolve_v4;
+use whilo_trace_engine::sim::SimNet;
 use whilo_trace_engine::stats::LOSS_NOTABLE_PCT;
 use whilo_trace_engine::{
     hop_stats, now_ms, spawn_monitor_with, timeline, verdict, Bucket, HopStats, HopStatus,
     MonitorConfig, MonitorEvent, MonitorHandle, MonitorOptions, ProbeKind, Prober, ProberFactory,
-    RoundRecord, Verdict,
+    Resolver, RoundRecord, Verdict,
 };
 use whilo_trace_store::buckets::{self, Grid, HopInfo, LineStats, Pick, Window};
 use whilo_trace_store::report::{self, Document, PinnedLine, Report, Section};
@@ -77,10 +79,82 @@ type Notify = Arc<dyn Fn(i64) + Send + Sync>;
 /// so no probe leaves the machine.
 type ProberSource = Arc<dyn Fn() -> std::io::Result<Box<dyn Prober>> + Send + Sync>;
 
+/// Where probes, host lookups and hop names come from. The core asks only this for them, so on
+/// the simulated network nothing reaches the real one by accident.
+struct Net {
+    /// `None` is the platform probe backend.
+    prober: Option<ProberSource>,
+    resolve: Resolver,
+    dns: DnsCache,
+    /// The made-up network of `whilo_trace_engine::sim`: reports say so.
+    simulated: bool,
+}
+
+impl Net {
+    fn real() -> Self {
+        Net {
+            prober: None,
+            resolve: Arc::new(resolve_v4),
+            dns: DnsCache::new(),
+            simulated: false,
+        }
+    }
+
+    /// The made-up network of `whilo_trace_engine::sim`: no probe and no DNS query leaves the
+    /// computer.
+    fn simulated(sim: Arc<SimNet>) -> Self {
+        let (probes, names) = (sim.clone(), sim.clone());
+        Net {
+            prober: Some(Arc::new(move || Ok(probes.prober()))),
+            resolve: sim.resolver(),
+            dns: DnsCache::with_lookup(move |ip| names.name(ip)),
+            simulated: true,
+        }
+    }
+
+    fn monitor_options(&self, paused: bool) -> MonitorOptions {
+        let prober = self
+            .prober
+            .clone()
+            .map(|open| -> ProberFactory { Box::new(move || open()) });
+        MonitorOptions {
+            paused,
+            prober,
+            resolve: Some(self.resolve.clone()),
+            ..Default::default()
+        }
+    }
+}
+
+/// Whether `WHILO_TRACE_SIMULATE` asks for the simulated network: any value but none, an
+/// empty one, `0`, `false`, `no` and `off`. A value that is not text asks for it too.
+fn simulate_value(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| {
+        !matches!(
+            v.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off"
+        )
+    })
+}
+
+/// The history of the simulated network: a file of its own next to the real one.
+fn simulated_db_path(real: PathBuf) -> PathBuf {
+    real.with_file_name("history-sim.db")
+}
+
+/// The first finding of a report of the simulated network, in the interface language.
+fn simulated_note(lang: &str) -> &'static str {
+    if lang == "en" {
+        "Simulated network (WHILO_TRACE_SIMULATE): the data is made up, this report is not for a provider."
+    } else {
+        "Сеть имитирована (WHILO_TRACE_SIMULATE): данные выдуманы, это не отчет для провайдера."
+    }
+}
+
 struct Core {
     db_path: PathBuf,
     notify: Notify,
-    prober: Option<ProberSource>,
+    net: Net,
     /// Writes: rounds from the monitors, and every change the interface makes.
     store: Arc<Mutex<Store>>,
     /// Long reads (the past, reports) on their own connection, so rounds are never held up.
@@ -89,7 +163,6 @@ struct Core {
     pins: Mutex<BTreeMap<i64, Pin>>,
     settings: Mutex<Settings>,
     recent: Mutex<Vec<String>>,
-    dns: DnsCache,
 }
 
 /// A poisoned lock still holds usable data: a panic in one command must not stop the others.
@@ -201,6 +274,18 @@ impl Core {
         notify: Notify,
         prober: Option<ProberSource>,
     ) -> Result<Arc<Core>, String> {
+        Self::open_net(
+            db_path,
+            notify,
+            Net {
+                prober,
+                ..Net::real()
+            },
+        )
+    }
+
+    /// `open` on another network: the simulated one, or a fake probe backend in tests.
+    fn open_net(db_path: PathBuf, notify: Notify, net: Net) -> Result<Arc<Core>, String> {
         let store = Store::open(&db_path).map_err(db)?;
         let reader = Store::open(&db_path).map_err(db)?;
         let pins = store.pins().map_err(db)?;
@@ -209,7 +294,7 @@ impl Core {
         Ok(Arc::new(Core {
             db_path,
             notify,
-            prober,
+            net,
             store: Arc::new(Mutex::new(store)),
             reader: Mutex::new(reader),
             targets: Mutex::new(BTreeMap::new()),
@@ -228,7 +313,6 @@ impl Core {
             ),
             settings: Mutex::new(settings),
             recent: Mutex::new(recent),
-            dns: DnsCache::new(),
         }))
     }
 
@@ -299,33 +383,21 @@ impl Core {
         let mut cfg = MonitorConfig::new(host.to_string());
         cfg.interval = Duration::from_secs_f64(interval_s);
         let (data, store, notify) = (data.clone(), self.store.clone(), self.notify.clone());
-        let prober = self
-            .prober
-            .clone()
-            .map(|open| -> ProberFactory { Box::new(move || open()) });
         // A target saved on pause starts paused: no probe and no lookup until it is resumed.
-        spawn_monitor_with(
-            cfg,
-            MonitorOptions {
-                paused,
-                prober,
-                ..Default::default()
-            },
-            move |event| {
-                match event {
-                    MonitorEvent::Round(round) => {
-                        let saved = lock(&store).insert_round(id, &round);
-                        let mut d = lock(&data);
-                        d.error = saved.err().map(db);
-                        d.hist.push(round);
-                    }
-                    MonitorEvent::Error(msg) => lock(&data).error = Some(error_code(&msg)),
-                    #[allow(unreachable_patterns)]
-                    _ => {}
+        spawn_monitor_with(cfg, self.net.monitor_options(paused), move |event| {
+            match event {
+                MonitorEvent::Round(round) => {
+                    let saved = lock(&store).insert_round(id, &round);
+                    let mut d = lock(&data);
+                    d.error = saved.err().map(db);
+                    d.hist.push(round);
                 }
-                notify(id);
-            },
-        )
+                MonitorEvent::Error(msg) => lock(&data).error = Some(error_code(&msg)),
+                #[allow(unreachable_patterns)]
+                _ => {}
+            }
+            notify(id);
+        })
         .map_err(io)
     }
 
@@ -606,7 +678,7 @@ fn compute(
     let dest = draw_target(w, period.as_ref());
     let dst = last.map(|r| r.dst);
     let name = match t.host.parse::<IpAddr>() {
-        Ok(ip) => core.dns.name(ip),
+        Ok(ip) => core.net.dns.name(ip),
         Err(_) => dst.map(|ip| ip.to_string()),
     };
     let path = PathSummary {
@@ -626,7 +698,7 @@ fn compute(
             .map(|h| PartialHop {
                 ttl: h.ttl,
                 addr: h.addr.map(|a| a.to_string()),
-                name: h.addr.and_then(|a| core.dns.name(a)),
+                name: h.addr.and_then(|a| core.net.dns.name(a)),
                 no_reply_pct: r3(w.stats(Pick::Hop(h.ttl), w.all()).no_reply_pct()),
             })
             .collect(),
@@ -670,7 +742,7 @@ fn compute(
                 id: pin_row_id(*pid),
                 target_id: t.id,
                 host: addr.clone().unwrap_or_else(|| format!("hop {}", p.ttl)),
-                name: info.and_then(|h| h.addr).and_then(|a| core.dns.name(a)),
+                name: info.and_then(|h| h.addr).and_then(|a| core.net.dns.name(a)),
                 ip: addr,
                 probe: probe.clone(),
                 interval: t.interval_s,
@@ -705,7 +777,7 @@ fn compute(
                 TraceHop {
                     ttl: h.ttl,
                     addr: h.addr.map(|a| a.to_string()),
-                    name: h.addr.and_then(|a| core.dns.name(a)),
+                    name: h.addr.and_then(|a| core.net.dns.name(a)),
                     status: status.into(),
                     origin: h.loss_origin,
                     dest: h.is_destination,
@@ -898,7 +970,7 @@ impl Core {
             });
         }
         // Resolve first, so a typo does not become a target.
-        whilo_trace_engine::monitor::resolve_v4(&host).map_err(|e| resolve_code(&e))?;
+        (self.net.resolve)(&host).map_err(|e| resolve_code(&e))?;
         let interval_ms = (interval_s * 1000.0).round() as i64;
         self.remember(&host)?;
         let row = {
@@ -1238,7 +1310,7 @@ impl Core {
                     PinnedLine {
                         ttl,
                         addr,
-                        name: addr.and_then(|a| self.dns.name(a)),
+                        name: addr.and_then(|a| self.net.dns.name(a)),
                         timeline: timeline(&rounds, Some(ttl), from_ms, to_ms, n),
                     }
                 })
@@ -1262,7 +1334,7 @@ impl Core {
         let ask = |d: &ReportData| -> Vec<Option<String>> {
             d.hops
                 .iter()
-                .map(|h| h.addr.and_then(|a| self.dns.name(a)))
+                .map(|h| h.addr.and_then(|a| self.net.dns.name(a)))
                 .collect()
         };
         let mut names: Vec<Vec<Option<String>>> = datas.iter().map(ask).collect();
@@ -1310,8 +1382,16 @@ impl Core {
             to_ms,
             tz_offset_min: req.tz_offset_min,
             generated_ms,
-            // Exactly what the dialog shows, in its language; none when it shows none.
-            findings: Some(req.findings.clone()),
+            // Exactly what the dialog shows, in its language; none when it shows none. A report
+            // of the simulated network says first that its data is made up.
+            findings: Some(
+                self.net
+                    .simulated
+                    .then(|| simulated_note(&lang).to_string())
+                    .into_iter()
+                    .chain(req.findings.iter().cloned())
+                    .collect(),
+            ),
             lang: &lang,
         };
 
@@ -1359,7 +1439,12 @@ impl Core {
             [one] => safe_name(&one.host),
             _ => "whilo-trace".to_string(),
         };
-        let stem = format!("{name}-{}", report::file_stamp(to_ms, req.tz_offset_min));
+        // The folder name marks the CSV and JSON of the simulated network too.
+        let sim = if self.net.simulated { "-simulated" } else { "" };
+        let stem = format!(
+            "{name}{sim}-{}",
+            report::file_stamp(to_ms, req.tz_offset_min)
+        );
         let mut dir = base.join(&stem);
         let mut k = 2;
         while dir.exists() {
@@ -1514,16 +1599,33 @@ fn main() {
             let notify: Notify = Arc::new(move |id| {
                 let _ = handle.emit("round", id);
             });
-            let core = Core::open(default_db_path(), notify)?;
+            let simulate = simulate_value(std::env::var_os("WHILO_TRACE_SIMULATE").as_deref());
+            let core = if simulate {
+                let db_path = simulated_db_path(default_db_path());
+                Core::open_net(db_path, notify, Net::simulated(SimNet::new()))?
+            } else {
+                Core::open(default_db_path(), notify)?
+            };
             core.start_saved()?;
             if let Some(window) = app.get_webview_window("main") {
-                let theme = lock(&core.settings).theme.clone();
+                let (theme, lang) = {
+                    let s = lock(&core.settings);
+                    (s.theme.clone(), s.lang.clone())
+                };
                 let dark = match theme.as_str() {
                     "dark" => true,
                     "light" => false,
                     _ => matches!(window.theme(), Ok(tauri::Theme::Dark)),
                 };
                 let _ = window.set_background_color(Some(window_background(dark)));
+                if simulate {
+                    // Made-up data must not pass for real: the title says so.
+                    let _ = window.set_title(if lang == "en" {
+                        "Whilo Trace (simulated network)"
+                    } else {
+                        "Whilo Trace (имитация сети)"
+                    });
+                }
             }
             app.manage(core);
             Ok(())
@@ -2205,5 +2307,102 @@ mod tests {
         assert!(openable("").is_err());
         #[cfg(windows)]
         assert_eq!(openable(&path(&page).replace('\\', "/")).unwrap(), page);
+    }
+
+    #[test]
+    fn simulation_is_asked_for_by_any_value_but_off() {
+        use std::ffi::OsStr;
+        for on in ["1", "true", "yes", "on", " 1 ", "anything"] {
+            assert!(simulate_value(Some(OsStr::new(on))), "{on}");
+        }
+        for off in ["", " ", "0", "false", "No", "OFF"] {
+            assert!(!simulate_value(Some(OsStr::new(off))), "{off}");
+        }
+        assert!(!simulate_value(None));
+        let real = PathBuf::from("data").join("history.db");
+        assert_eq!(
+            simulated_db_path(real),
+            PathBuf::from("data").join("history-sim.db")
+        );
+    }
+
+    /// The simulated network end to end. Names under `.example` resolve nowhere for real, and
+    /// every hop answers from the made-up network, for an IP address too; the report says the
+    /// data is made up.
+    #[test]
+    fn runs_on_the_simulated_network() {
+        let dir = temp_dir("sim");
+        let db_path = dir.0.join("history-sim.db");
+        let sim = SimNet::with(false, 11);
+        let core = Core::open_net(db_path.clone(), Arc::new(|_| {}), Net::simulated(sim)).unwrap();
+        let add = |host: &str| {
+            core.add(&AddTargetReq {
+                host: host.into(),
+                probe: None,
+                interval_s: Some(0.5),
+            })
+        };
+        for host in ["loss.example", "down.example", "8.8.8.8"] {
+            add(host).unwrap();
+        }
+        assert_eq!(add("typo.invalid").err().as_deref(), Some("resolve_failed"));
+        let datas: Vec<Arc<Mutex<TargetData>>> = lock(&core.targets)
+            .values()
+            .map(|t| t.data.clone())
+            .collect();
+        wait_for(20, "no rounds on the simulated network", || {
+            datas.iter().all(|d| lock(d).hist.len() >= 6)
+        });
+
+        let s = Store::open(&db_path).unwrap();
+        let rounds = |host: &str| {
+            let t = s
+                .targets()
+                .unwrap()
+                .into_iter()
+                .find(|t| t.host == host)
+                .unwrap();
+            s.load_rounds(t.id, 0, i64::MAX).unwrap()
+        };
+        let cgnat = IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1));
+        let loss = rounds("loss.example");
+        assert!(loss
+            .iter()
+            .all(|r| r.hop(2).and_then(|h| h.addr) == Some(cgnat)));
+        assert!(loss.iter().any(|r| r.reached));
+        assert!(rounds("down.example").iter().all(|r| !r.reached));
+        let quad8 = IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8));
+        assert!(rounds("8.8.8.8")
+            .iter()
+            .all(|r| r.dst == quad8 && r.hop(2).and_then(|h| h.addr) == Some(cgnat)));
+        wait_for(10, "no simulated hop name", || {
+            core.net.dns.name(cgnat).as_deref() == Some("cgnat.provider.example")
+        });
+        let dst = loss[0].dst;
+        wait_for(10, "no name for the destination", || {
+            core.net.dns.name(dst).as_deref() == Some("loss.example")
+        });
+
+        let res = core
+            .export(
+                ReportReq {
+                    rows: vec!["t1".into()],
+                    from_ms: 0,
+                    to_ms: now_ms() + 1000,
+                    formats: vec!["html".into()],
+                    tz_offset_min: 0,
+                    findings: Vec::new(),
+                    png_base64: None,
+                    dir: Some(dir.0.display().to_string()),
+                },
+                None,
+            )
+            .unwrap();
+        assert!(res.dir.contains("loss.example-simulated-"), "{}", res.dir);
+        let html = std::fs::read_to_string(PathBuf::from(&res.dir).join("report.html")).unwrap();
+        assert!(html.contains(simulated_note("ru")));
+        assert!(html.contains("cgnat.provider.example"));
+        drop(s);
+        shut_down(core);
     }
 }

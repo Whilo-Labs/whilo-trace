@@ -13,6 +13,12 @@ pub struct DnsCache {
 
 impl DnsCache {
     pub fn new() -> Self {
+        Self::with_lookup(|ip| dns_lookup::lookup_addr(&ip).ok())
+    }
+
+    /// A cache that asks `lookup` instead of the system resolver: the simulated network
+    /// (`crate::sim`) names its own hops.
+    pub fn with_lookup(lookup: impl Fn(IpAddr) -> Option<String> + Send + 'static) -> Self {
         let names: Arc<Mutex<HashMap<IpAddr, Option<String>>>> = Arc::default();
         let (queue, rx) = channel::<IpAddr>();
         let shared = names.clone();
@@ -20,9 +26,7 @@ impl DnsCache {
             .name("reverse dns".into())
             .spawn(move || {
                 for ip in rx {
-                    let name = dns_lookup::lookup_addr(&ip)
-                        .ok()
-                        .filter(|n| *n != ip.to_string());
+                    let name = lookup(ip).filter(|n| *n != ip.to_string());
                     shared.lock().unwrap().insert(ip, name);
                 }
             })
