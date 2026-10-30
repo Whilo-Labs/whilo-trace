@@ -52,7 +52,7 @@ system's own message, in the system's language.
 | `pick_folder` | `{}` | `string` or `null` (folder dialog) |
 | `open_folder` | `{ path }` | `null`; a folder opens in the file manager, a file of a report (`.html`, `.png`, `.csv`, `.json`) in its default program; any other path is `io: ...` |
 | `set_background` | `{ dark }` | `null`; the window behind the page takes the page's background (`--bg`), so its edges stay in the theme while it grows. `base/theme.js` calls it when the shown theme changes; the core sets it from the saved theme at start |
-| `geo_check` | `{}` | `{ offer, reason }`: whether a newer places database is out (see Places database). At most one answered request a day: a check that failed (no network, a server error) is asked again at the next call. None on the simulated network |
+| `geo_check` | `{}` | `{ offer, reason }`: whether a newer places database is out (see Places database). At most one check a day goes to the server, answered or not: after a check that failed (no network, a timeout, a server error) the later calls that day answer `cached`. None on the simulated network |
 | `geo_download` | `{ month }` | `null` at once; the download runs on its own and reports through the event `geo` and `Snapshot.geo.download`. Only a month newer than the database in use; `geo_busy`, `geo_unavailable`, `geo_invalid: ...` |
 | `geo_cancel` | `{}` | `null`; the running download ends as `cancelled` |
 | `geo_remove` | `{}` | `null`; deletes the downloaded database and goes back to the bundled one. The days of the last check and offer stay: an update offered or checked today is not offered again today; `geo_busy` during a download |
@@ -312,21 +312,23 @@ The core goes through these in order and stops at the first that holds:
 | `simulated` | the simulated network | never |
 | `disabled` | `settings.geoCheck` is off | none |
 | `asked` | an update was offered today already | none |
-| `cached` | the server was asked today already | none |
+| `cached` | the server was asked today already, answered or not | none |
 | `current` | the database in use is of the current month (UTC), or later | none |
-| `offer` | the server has the current month: `offer` is set | one |
-| `none` | the server has nothing newer yet | one |
-| `missing` | there is no database (or it does not open), and the server has none out for this month yet | one |
-| `error` | the check failed (no network, a server error); the interface shows nothing | one |
+| `offer` | the server has the current month: `offer` is set | one (two without HEAD) |
+| `none` | the server has nothing newer yet | one (two without HEAD) |
+| `missing` | there is no database (or it does not open), and the server has none out for this month yet | one (two without HEAD) |
+| `error` | the check failed (no network, a timeout, a server error); the interface shows nothing. The day still counts: later calls that day answer `cached` | one (two without HEAD) |
 
-- One request is a HEAD (or a 1-byte range GET) of the City file of the current month on
-  download.db-ip.com. With no database at all the check still goes out, and an offer downloads the
-  current month.
+- One check is a HEAD of the City file of the current month on download.db-ip.com; a server that
+  answers it with 405 or 501 gets a second request, a GET of its first byte (`Range: bytes=0-0`). With
+  no database at all the check still goes out, and an offer downloads the current month.
 - `bytes`: the compressed size of the City file when the server tells it, else `null`; the ASN file adds
   about 5 MB. A size hint only.
-- Days are local dates, kept in `geo-update/state.json` in the data folder: the day of the last answer
-  from the server (`cached`) and of the last offer (`asked`). A failed check is not remembered, so the
-  next one asks again. `geo_remove` keeps them.
+- Days are local dates, kept in `geo-update/state.json` in the data folder: the day of the last check
+  sent to the server, answered or not (`cached`), and of the last offer (`asked`). The day of a check is
+  written before its request goes out, so a check that failed, or one cut short by closing the program,
+  uses up the day too; when the file cannot be written, the next call asks again. A call that sends no
+  request writes nothing. `geo_remove` keeps them.
 - `geo_download` fetches the City and ASN files of `month` into `geo-update`, unpacked and checked,
   under new names; the new database is used as soon as the download is `done`, and older downloaded
   months are deleted. The bundled database (`geo` among the program's files) is never written to.
