@@ -59,7 +59,9 @@ system's own message, in the system's language.
 | `save_image` | `{ dir, name, pngBase64 }` | `{ path }`; the picture of the map as `<name>.png` in `dir` (`null`: Documents/Whilo Trace, as for reports). Never overwrites a file (see below); `io: ...` |
 
 Event `round`: a target finished a round, payload is its numeric target id. The interface asks for a new
-snapshot at most once a second, and only while it shows live data (`base/live.js`).
+snapshot at most once a second, and only while it shows live data (`base/live.js`). On the trace screen a
+round of the shown target also starts the route map's packet: the first snapshot asked after the event
+(`Live.askedAt`) tells how that round ended.
 
 Event `geo`: a download of the places database goes on; the payload is the `download` object of
 `Snapshot.geo` (below). It comes when the download starts, at most every 250 ms while it runs, and once
@@ -115,8 +117,9 @@ resumes it, then at its saved interval.
   labels from `toMs` (`WT.ticksAt`).
 - `geo`: the places database of the route map (DB-IP City Lite and ASN Lite), in every snapshot.
   - `state`: `ok`; `missing` (there is none: the program came without one, or it was deleted);
-    `unreadable` (the files are there but do not open; found out when a trace first needs them, `ok`
-    until then); `simulated` (the simulated network: every place is made up, nothing is downloaded).
+    `unreadable` (the files are there but do not open; found out when they are first opened, for a trace
+    or by `geo_check` or `geo_download`, `ok` until then); `simulated` (the simulated network: every
+    place is made up, nothing is downloaded).
   - `month`: release month of the database in use, `null` without one. With `unreadable`, the month of
     the set that does not open.
   - `source`: `bundled` (came with the program), `downloaded` (an update, kept in `geo-update` in the
@@ -292,7 +295,9 @@ Returns `{ "dir": "C:\\Users\\...\\Documents\\Whilo Trace\\whilo-trace-20261027-
   folder gets it as `map.png`, and `report.html` shows the same picture inline (the page stays one file)
   in a «Карта маршрута» / "Route map" figure above the charts, with the credit
   `IP Geolocation by DB-IP (https://db-ip.com), CC BY 4.0` in its footer. Anything that is not a PNG is
-  left out, as a `pngBase64` that does not decode is.
+  left out, as a `pngBase64` that does not decode is. Only the trace screen sends it, when its route has
+  places, with any formats: drawn from the data on that screen when the report is saved, light, nothing
+  hidden.
 - The HTML page is in the interface language. Status names are neutral and name the probe type of the
   data, as the interface does (`не отвечает на ICMP`, `No reply to ICMP`); CSV and JSON are in English
   with times in UTC.
