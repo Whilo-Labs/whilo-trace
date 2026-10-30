@@ -4,4 +4,6 @@
 *.db
 *.db-wal
 *.db-shm
+*.mmdb
+*.mmdb.gz
 /reports/

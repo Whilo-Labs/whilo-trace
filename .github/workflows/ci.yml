@@ -29,7 +29,7 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  # Engine, history and command line on all three systems. The probes that reach the network are ignored tests.
+  # Engine, history, places and command line on all three systems. The probes that reach the network are ignored tests.
   test:
     strategy:
       fail-fast: false
@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p whilo-trace-engine -p whilo-trace-store -p whilo-trace-cli
+      - run: cargo test -p whilo-trace-engine -p whilo-trace-store -p whilo-trace-geo -p whilo-trace-cli
 
   # The desktop app: tests and release binaries on Windows.
   app:

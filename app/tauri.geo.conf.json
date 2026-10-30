@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "resources": {
+      "../.target/geo/dbip-city-lite.mmdb": "geo/dbip-city-lite.mmdb",
+      "../.target/geo/dbip-asn-lite.mmdb": "geo/dbip-asn-lite.mmdb",
+      "../.target/geo/manifest.json": "geo/manifest.json",
+      "../.target/geo/NOTICE.txt": "geo/NOTICE.txt",
+      "../THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt"
+    }
+  }
+}

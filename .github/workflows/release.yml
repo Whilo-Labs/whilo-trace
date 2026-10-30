@@ -3,6 +3,8 @@ name: Release
 # A tag v* builds the app for Windows, Linux and macOS and makes a draft release with the files and
 # .github/release-notes.md; publishing the draft is a manual step. Run it by hand (Actions, Release,
 # Run workflow) to build the files without a release: they stay on the run as artifacts.
+# The places database of the route map is downloaded once, by the geo job, so that all three systems
+# bundle the same month; app/tauri.geo.conf.json adds it to the app. Other builds go without it.
 on:
   push:
     tags: ["v*"]
@@ -12,7 +14,28 @@ permissions:
   contents: read
 
 jobs:
+  # DB-IP City Lite and ASN Lite of the current month (the month before when that one is not out yet),
+  # unpacked and checked, with manifest.json and NOTICE.txt.
+  geo:
+    runs-on: ubuntu-latest
+    outputs:
+      month: ${{ steps.fetch.outputs.month }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Places database
+        id: fetch
+        run: |
+          python3 tools/fetch_geo.py --out .target/geo
+          month=$(python3 -c 'import json; print(json.load(open(".target/geo/manifest.json"))["month"])')
+          echo "month=$month" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: geo
+          path: .target/geo/
+          if-no-files-found: error
+
   windows:
+    needs: geo
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,9 +44,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          name: geo
+          path: .target/geo
       - name: Desktop app and installer
         working-directory: app
-        run: npx --yes @tauri-apps/cli@2 build --bundles nsis
+        run: npx --yes @tauri-apps/cli@2 build --bundles nsis --config tauri.geo.conf.json
       - name: Command line
         run: cargo build --release -p whilo-trace-cli
       - name: Package
@@ -33,7 +60,9 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           $p = "dist/whilo-trace-$v-windows-x64-portable"
           New-Item -ItemType Directory -Force $p | Out-Null
-          Copy-Item .target/release/whilo-trace.exe, .target/release/whilo-trace-cli.exe, README.md, LICENSE-MIT, LICENSE-APACHE $p
+          Copy-Item .target/release/whilo-trace.exe, .target/release/whilo-trace-cli.exe, README.md, LICENSE-MIT, LICENSE-APACHE, THIRD-PARTY-NOTICES.txt $p
+          # The places database, where the build put it next to the exe: the portable app finds it there.
+          Copy-Item -Recurse .target/release/geo "$p/geo"
           Compress-Archive -Path "$p/*" -DestinationPath "$p.zip"
           Remove-Item -Recurse $p
           $setup = Get-ChildItem .target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
@@ -45,6 +74,7 @@ jobs:
           path: dist/*
 
   linux:
+    needs: geo
     # The oldest supported runner: the AppImage then runs on older distributions too.
     runs-on: ubuntu-22.04
     steps:
@@ -58,9 +88,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          name: geo
+          path: .target/geo
       - name: Desktop app (deb, AppImage)
         working-directory: app
-        run: npx --yes @tauri-apps/cli@2 build --bundles deb,appimage
+        run: npx --yes @tauri-apps/cli@2 build --bundles deb,appimage --config tauri.geo.conf.json
       - name: Command line
         run: cargo build --release -p whilo-trace-cli
       - name: Package
@@ -77,6 +111,7 @@ jobs:
           path: dist/*
 
   macos:
+    needs: geo
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -87,9 +122,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - uses: actions/download-artifact@v4
+        with:
+          name: geo
+          path: .target/geo
       - name: Desktop app (universal dmg for Apple silicon and Intel)
         working-directory: app
-        run: npx --yes @tauri-apps/cli@2 build --target universal-apple-darwin --bundles dmg
+        run: npx --yes @tauri-apps/cli@2 build --target universal-apple-darwin --bundles dmg --config tauri.geo.conf.json
       - name: Command line (universal)
         run: |
           cargo build --release -p whilo-trace-cli --target aarch64-apple-darwin
@@ -110,7 +149,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux, macos]
+    needs: [geo, windows, linux, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -120,18 +159,29 @@ jobs:
         run: |
           v=$(node -p "require('./app/tauri.conf.json').version")
           test "${GITHUB_REF_NAME#v}" = "$v" || { echo "tag $GITHUB_REF_NAME does not match version $v"; exit 1; }
+      # The files of the three systems only: the geo artifact is inside them already.
       - uses: actions/download-artifact@v4
         with:
+          pattern: "{windows,linux,macos}"
           path: dist
           merge-multiple: true
       - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
+          GEO_MONTH: ${{ needs.geo.outputs.month }}
         run: |
           ls -la dist
+          # The month of the bundled places database is known only after the geo job.
+          {
+            cat .github/release-notes.md
+            echo
+            echo "## Places database"
+            echo
+            echo "The route map comes with DB-IP City Lite and ASN Lite of $GEO_MONTH, unpacked and otherwise unmodified. [IP Geolocation by DB-IP](https://db-ip.com), under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/): the database is not covered by the license of Whilo Trace. See [THIRD-PARTY-NOTICES.txt](https://github.com/Whilo-Labs/whilo-trace/blob/$GITHUB_REF_NAME/THIRD-PARTY-NOTICES.txt)."
+          } > "$RUNNER_TEMP/release-notes.md"
           # A second run for the same tag replaces the files instead of failing.
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" dist/* --clobber
           else
-            gh release create "$GITHUB_REF_NAME" dist/* --draft --title "Whilo Trace ${GITHUB_REF_NAME#v}" --notes-file .github/release-notes.md
+            gh release create "$GITHUB_REF_NAME" dist/* --draft --title "Whilo Trace ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/release-notes.md"
           fi
