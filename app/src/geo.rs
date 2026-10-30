@@ -272,8 +272,9 @@ impl GeoState {
     /// `geo_check` at `now`, on the local day `today` ("2026-10-28"); `enabled` is the setting.
     /// No request on the simulated network, with the check turned off, after an offer or a
     /// check the same day, or while the databases in use are of the current month; otherwise
-    /// one request (`Remote::check`). Its day is remembered only when it is answered: a check
-    /// that failed is asked again at the next call.
+    /// one check (`Remote::check`: a HEAD, plus a 1-byte GET when the server does not take
+    /// HEAD). Its day is kept before it goes out: answered or not, and even when the program
+    /// closes on the way, nothing more is asked that day.
     pub fn check(&self, enabled: bool, now: SystemTime, today: &str) -> GeoCheckRes {
         if self.simulated {
             return answer(None, "simulated");
@@ -311,22 +312,24 @@ impl GeoState {
         let Some(remote) = remote else {
             return answer(None, "error");
         };
+        // One request a day, answered or not: its day is written before it goes out. A day
+        // that could not be written is only asked about again.
+        days.last_check_day = Some(today.into());
+        let _ = files::write_state(&layout, &days);
         let found = match remote.check(month.as_deref(), now) {
             Ok(found) => found,
             Err(_) => return answer(None, "error"),
         };
-        days.last_check_day = Some(today.into());
         let reason = match &found {
             Some(_) => {
                 days.last_prompt_day = Some(today.into());
+                let _ = files::write_state(&layout, &days);
                 "offer"
             }
             None if have.is_some() => "none",
             // No databases, and none out to download yet.
             None => "missing",
         };
-        // A day that could not be written is only asked about again.
-        let _ = files::write_state(&layout, &days);
         let offer = found.map(|o| GeoOffer {
             month: o.month,
             bytes: o.city_bytes,
@@ -779,7 +782,7 @@ pub fn save_image_in(req: &SaveImageReq, docs: Option<PathBuf>) -> Result<SaveIm
 }
 
 /// Is a newer database of places out? The interface asks when the map opens; at most one
-/// answered request a day goes out, and a check that failed is asked again at the next call.
+/// request a day goes out, answered or not.
 #[tauri::command]
 pub async fn geo_check(core: State<'_, Arc<Core>>) -> Result<GeoCheckRes, String> {
     let geo = core.geo.clone();
@@ -1000,7 +1003,8 @@ pub(crate) mod testing {
         fail: Mutex<Option<GeoError>>,
         /// A download waits for its cancel.
         pub hold: AtomicBool,
-        /// A download panics after its first progress.
+        /// A check panics once it is noted (the program closing on the way), a download after
+        /// its first progress.
         pub panic: AtomicBool,
     }
 
@@ -1034,6 +1038,9 @@ pub(crate) mod testing {
                 .lock()
                 .unwrap()
                 .push(have_month.map(String::from));
+            if self.panic.load(Ordering::SeqCst) {
+                panic!("the program closed on the way");
+            }
             self.answer.lock().unwrap().clone().unwrap_or(Ok(None))
         }
 
@@ -1160,9 +1167,10 @@ mod tests {
         let geo = geo_in(&dir, &remote, quiet());
         let check = |enabled: bool, day: &str| geo.check(enabled, now(), day);
 
-        // Turned off in the settings: nothing is asked.
+        // Turned off in the settings: nothing is asked, nothing remembered.
         assert_eq!(reason(check(false, DAY)), "disabled");
         assert!(remote.checks().is_empty());
+        assert_eq!(files::read_state(&layout(&dir)), files::State::default());
 
         // A newer month is out: offered once that day.
         remote.answer(Ok(Some(offer("2026-10", Some(61_000_000)))));
@@ -1192,13 +1200,36 @@ mod tests {
         assert_eq!(days.last_check_day.as_deref(), Some("2026-10-29"));
         assert_eq!(days.last_prompt_day.as_deref(), Some(DAY));
 
-        // A check that failed is not remembered: the next one asks again.
+        // A check that failed counts too: nothing more is asked that day.
         remote.answer(Err(GeoError::Net("timeout: global".into())));
         assert_eq!(reason(check(true, "2026-10-30")), "error");
-        assert_eq!(reason(check(true, "2026-10-30")), "error");
-        assert_eq!(remote.checks().len(), 4);
+        assert_eq!(reason(check(true, "2026-10-30")), "cached");
+        assert_eq!(remote.checks().len(), 3);
         let days = files::read_state(&layout(&dir));
-        assert_eq!(days.last_check_day.as_deref(), Some("2026-10-29"));
+        assert_eq!(days.last_check_day.as_deref(), Some("2026-10-30"));
+        assert_eq!(days.last_prompt_day.as_deref(), Some(DAY));
+
+        // The next day asks again; a server error counts the same.
+        remote.answer(Err(GeoError::Http(503)));
+        assert_eq!(reason(check(true, "2026-10-31")), "error");
+        assert_eq!(reason(check(true, "2026-10-31")), "cached");
+        assert_eq!(remote.checks().len(), 4);
+    }
+
+    #[test]
+    fn a_check_the_program_closed_on_is_not_sent_again_that_day() {
+        let dir = TempDir::new("closed");
+        bundle(&dir.path().join("geo"), Some("2026-09"));
+        let remote = Arc::new(FakeRemote::default());
+        remote.panic.store(true, Ordering::SeqCst);
+        let geo = geo_in(&dir, &remote, quiet());
+        let closed = panic::catch_unwind(AssertUnwindSafe(|| geo.check(true, now(), DAY)));
+        assert!(closed.is_err());
+        // Started again the same day: the day was kept before the request went out.
+        remote.panic.store(false, Ordering::SeqCst);
+        let geo = geo_in(&dir, &remote, quiet());
+        assert_eq!(reason(geo.check(true, now(), DAY)), "cached");
+        assert_eq!(remote.checks().len(), 1);
     }
 
     #[test]
@@ -1273,6 +1304,8 @@ mod tests {
         let geo = Arc::new(GeoState::new(&history(&dir), false));
         assert_eq!(reason(geo.check(true, now(), DAY)), "error");
         assert_eq!(geo.download("2026-10").unwrap_err(), "geo_unavailable");
+        // Neither remembers a day: no request went out.
+        assert_eq!(files::read_state(&layout(&dir)), files::State::default());
     }
 
     #[test]

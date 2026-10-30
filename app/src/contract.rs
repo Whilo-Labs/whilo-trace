@@ -216,8 +216,8 @@ pub struct Settings {
     pub lang: String,
     /// Window the main screen opens with.
     pub window: String,
-    /// Look for a newer database of places when the map opens: at most one answered request a
-    /// day (`geo_check`).
+    /// Look for a newer database of places when the map opens: at most one request a day,
+    /// answered or not (`geo_check`).
     #[serde(default = "yes")]
     pub geo_check: bool,
     /// Home put on the map by hand; null: the first router placed in a city.

@@ -172,7 +172,7 @@ impl Updater {
     /// of the databases in use, none when there are none. The answer is an offer of the current
     /// month, or none when the databases in use are of that month (then no request is sent at
     /// all) or its files are not out yet (404). One HEAD request of the City file; a server that
-    /// does not take HEAD (405, 501) gets one GET of its first byte instead. Other statuses and
+    /// does not take HEAD (405, 501) then gets one GET of its first byte. Other statuses and
     /// failed connections are errors. The whole check takes at most 20 s.
     pub fn check(
         &self,

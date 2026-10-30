@@ -148,7 +148,7 @@ pub fn write_manifest(dir: &Path, manifest: &Manifest) -> Result<(), GeoError> {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct State {
-    /// The last day a check got an answer from the server.
+    /// The last day a check sent its request to the server, answered or not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_check_day: Option<String>,
     /// The last day the user was offered an update.
