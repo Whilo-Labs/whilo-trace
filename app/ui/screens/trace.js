@@ -113,6 +113,9 @@
       if (w && w.setFullscreen) w.setFullscreen(!!on).catch(noop);
     } catch (e) { /* no window API here */ }
   }
+  // Leaving the page in full screen (a reload, a key that goes back): the window does not stay full screen without
+  // the card that can end it.
+  window.addEventListener('pagehide', function () { if (view && view.st.full) fullScreen(false); });
   // A newer places database: asked once per page load when the map is first shown (the core sends at most one answered
   // request a day and says why it did not ask); only an offer opens the dialog.
   function checkGeo() {
@@ -127,7 +130,13 @@
     if (started) return;
     started = true;
     resolve();
-    if (window.MAP) MAP.init({ onSelect: function (ttl) { if (view) view.select(ttl); }, onHome: setHome });
+    if (window.MAP) {
+      MAP.init({
+        onSelect: function (ttl) { if (view) view.select(ttl); }, onHome: setHome,
+        // the system's reduced-motion setting changed: the button follows the map
+        onPause: function (paused) { if (view) view.update({ animPaused: paused }); },
+      });
+    }
     view = TR.mount(el, {
       id: id, win: Live.state.window, selected: hop, loading: true, down: down,
       view: mode, animPaused: !!(window.MAP && MAP.paused()), picture: !!(window.MAP && MAP.picture),
@@ -170,7 +179,17 @@
   // report and closes on its own; it gets the target row and the period picked on the hop timeline ([fromMs, toMs)).
   function openReport() {
     if (!window.HE || !HE.report || !view) return;
-    HE.report(modal, { from: 'trace', target: id, range: view.st.range || null });
+    HE.report(modal, { from: 'trace', target: id, range: view.st.range || null, map: reportMap() });
+  }
+  // The route map for the report (map.png and a figure in report.html): light and not masked, 1200×675, drawn from
+  // the data on screen when the report is saved. Only when the route has places.
+  function reportMap() {
+    function data() {
+      var m = view.model();
+      return m && m.kind === 'trace' ? { m: m, geo: WT.geo || null, home: WT.trace ? WT.trace.home || null : null } : null;
+    }
+    if (!window.MAP || !MAP.png || !data() || !MAP.hasPlaces(data())) return null;
+    return function () { var x = data(); return x ? MAP.png(x, { size: 'wide', theme: 'light', mask: false }) : null; };
   }
   // Esc while the dialog is open is the dialog's: HE.report listens for it on the document while it is open.
   // Fallback for a dialog that does not: Esc nobody took (the focus outside the dialog) closes it here.

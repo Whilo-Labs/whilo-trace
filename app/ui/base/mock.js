@@ -5,13 +5,21 @@
 // screen, exactly like the app), ?mock=down (the core does not answer: every command fails with
 // core_unavailable until MOCK.down = false is set in the console).
 // Places database of the route map: ?mock=geo-new (a newer month is out, the check offers it), geo-none (no
-// database: no places, the map shows its empty state), geo-broken (the database does not read).
+// database: no places, the map shows its empty state), geo-broken (the database does not read). With ?mock=live
+// every fifth round of the google row is lost from hop 7 on, so the map's packet shows a lost round now and then.
+// ?mock=calm: the system asks for reduced motion (prefers-reduced-motion), the map starts without its packet.
 // Settings live in sessionStorage, so every tab has its own.
 (function () {
   if (window.__TAURI__) return;
   var WT = window.WT;
   var Q = new URLSearchParams(location.search);
   var FLAGS = (Q.get('mock') || '').split(',');
+  if (FLAGS.indexOf('calm') >= 0 && window.matchMedia) {
+    var mm = window.matchMedia.bind(window), noop = function () {};
+    window.matchMedia = function (q) {
+      return /prefers-reduced-motion:\s*reduce/.test(q) ? { matches: true, media: q, addEventListener: noop, removeEventListener: noop, addListener: noop, removeListener: noop } : mm(q);
+    };
+  }
   WT.N = 120; // the mockup window: 10 minutes in 5-second buckets
 
   // Scenario: a home line with loss of about 5% that starts after the provider's CGNAT hop.
@@ -20,6 +28,7 @@
   // Loss lands on the same moments for every target behind the provider hop: a path problem.
   var LOSS = [16, 17, 43, 70, 71, 97, 109];
   var G_LOSS = [16, 43, 44, 70, 97, 109, 110]; // the google row and its demo route (TRACE_G), from hop 7 on
+  var gRound = 0, gLost = false; // ?mock=live: the google row's rounds so far, whether the last one was lost
   var END = new Date(2026, 9, 27, 16, 0, 0).getTime(), END0 = END;
   var TICKS = {
     '5m': ['15:55', '15:56', '15:57', '15:58', '15:59', '16:00'],
@@ -336,10 +345,14 @@
     if (to !== END0) delete out.ticks;
     // range is [fromMs, toMs) like the window: toMs is the end of the last picked bucket
     var idx = req.range ? [toIdx(req.range[0], from, bucket), toIdx(req.range[1] - 1, from, bucket)] : null;
-    out.targets.forEach(function (t) { finish(t, t.interval, from, bucket, idx); });
+    out.targets.forEach(function (t) { finish(t, t.interval, from, bucket, idx); if (gRound && t.host === '8.8.8.8' && !t.hopOf) t.stats.lastLost = gLost; });
     if (out.trace) {
       var traced = rows.filter(function (r) { return r.id === out.trace.target; })[0], iv = traced ? traced.interval : 2.5;
-      out.trace.hops.forEach(function (h) { finish(h, iv, from, bucket, idx); });
+      out.trace.hops.forEach(function (h) {
+        finish(h, iv, from, bucket, idx);
+        // the outcome of the google row's last round (live): lost from hop 7 on, answered before it
+        if (gRound && traced && traced.host === '8.8.8.8' && h.addr) h.stats.lastLost = gLost && h.ttl >= 7;
+      });
       out.trace.rounds = sum(roundsIn(iv, from, bucket), 0, WT.N - 1);
       geoFill(out.trace, traced ? traced.ip : null);
     }
@@ -510,11 +523,22 @@
     down: FLAGS.indexOf('down') >= 0,
   };
 
+  // The google row's rounds (live): every fifth is lost from hop 7 on (the demo route's loss origin). Its bucket
+  // counts as loss there, and lastLost says so until the next round, as the core sets it from each round's outcome.
+  function googleRound() {
+    gLost = ++gRound % 5 === 0;
+    if (!gLost) return;
+    var last = WT.N - 1;
+    rows.filter(function (r) { return r.host === '8.8.8.8' && !r.hopOf; }).concat(TRACE_G.hops.filter(function (h) { return h.ttl >= 7; })).forEach(function (t) {
+      if ((t.loss || []).indexOf(last) < 0) t.loss = (t.loss || []).concat([last]);
+    });
+  }
   if (FLAGS.indexOf('live') >= 0) {
     var tick = 0;
     setInterval(function () {
       if (window.MOCK.down) return; // a core that does not answer sends no rounds either
       if (++tick % 2 === 0) shift();
+      googleRound();
       // rounds of 1.1.1.1 and of 8.8.8.8 (the google row: the route map's demo route)
       [1, 2].forEach(function (tid) { (listeners.round || []).forEach(function (cb) { cb(tid); }); });
     }, 2500);

@@ -987,6 +987,7 @@
     var n = 0;
     FMT.forEach(function (f) { if (o.fmt[f[0]]) n += FILES[f[0]]; });
     if (!n) return { n: 0, why: ['Выберите хотя бы один формат', 'Pick at least one format'] };
+    if (o.map) n++; // map.png comes with any format
     if (o.period === 'custom' && o.cerr) return { n: 0, why: o.cerr };
     return { n: n };
   }
@@ -1163,7 +1164,8 @@
 
   // The «Report for ISP» dialog in host (the screen's modal box, it is shown and hidden here).
   // opts: { from: 'main' | 'trace', target: row id (trace screen), range: [fromMs, toMs) picked on a timeline
-  // (default: the period of the data on screen), onClose(result | null) }. The dialog asks the core for the period's
+  // (default: the period of the data on screen), onClose(result | null), map: a function that returns the route map as
+  // a PNG data URL (trace screen, when the route has places; saved as map.png) }. The dialog asks the core for the period's
   // data, the folder (pick_folder), saves (export_report) and opens the folder (open_folder) itself.
   // While it is open it takes Esc and Tab for the whole page, so the screen under it needs no handler of its own.
   function report(host, opts) {
@@ -1184,6 +1186,8 @@
       data: null, useRange: false, key: null, loadErr: null, saving: false, saveWanted: false, err: null, res: null, what: null, copied: false,
     };
     if (o.period === 'sel' && !o.sel) o.period = 'screen';
+    // The trace screen's route map (map.png): a function that draws it, given when the route has places.
+    o.map = typeof opts.map === 'function' ? opts.map : null;
     o.text = [inputText(o.custom[0], o.tz, isEN()), inputText(o.custom[1], o.tz, isEN())];
     var closed = false, painting = false, typeT = 0, prev = document.activeElement;
     host.innerHTML = '<div class="ms"><div class="ms-scrim"></div><div class="rp-host"></div></div>';
@@ -1281,14 +1285,17 @@
       var r = periodRange(o), en = isEN();
       if (!r || fileCount(o).why || o.loadErr) return;
       if (!o.data) { o.saveWanted = true; soft(); return; } // load() saves as soon as the period's data is in
-      var png = null;
+      var png = null, map = null;
       if (o.fmt.png) { try { png = drawPng(o); } catch (e) { console.error(e); } }
+      // the route map: light and not masked (it goes to the provider), 1200×675
+      if (o.map) { try { map = o.map(); } catch (e) { console.error(e); } }
       var req = {
         rows: lines(o).map(function (t) { return t.id; }), fromMs: Math.round(r[0]), toMs: Math.round(r[1]),
         formats: FMT.map(function (f) { return f[0]; }).filter(function (k) { return o.fmt[k]; }), tzOffsetMin: offMin(r[1], o.tz),
         findings: o.findings ? findingsOf(o).map(function (x) { var s = x.f[en ? 1 : 0]; return o.from === 'trace' ? probeLabel(x.t) + ': ' + s : s; }) : [],
         pngBase64: png, dir: o.dir,
       };
+      if (map) req.mapPngBase64 = map;
       o.saving = true; o.err = null;
       soft();
       window.API.call('export_report', { req: req }).then(function (res) {

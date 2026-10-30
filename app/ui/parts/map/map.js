@@ -8,10 +8,17 @@
 // readout: the only layer meant to be redrawn per frame); L2 (callouts, legend, scale and sources, edge pointer, degree
 // labels). A layer is redrawn only when what it shows changed. Colours are tokens read from the page (again when the
 // theme changes; the card in full screen is dark). Actions leave through callbacks: onSelect(ttl), onHome({lat, lon} |
-// null: «Дом здесь» / «Сбросить дом» in the right-click menu).
-// MAP: init(o), attach(host | null), update(data), round(targetId), setPaused(on), paused(), renderAt(t).
+// null: «Дом здесь» / «Сбросить дом» in the right-click menu), onPause(paused: the system's reduced-motion setting
+// changed while the page is open).
+// The packet follows the target's real rounds (MAP.round, the "round" event): one packet per round with the outcome
+// the next snapshot shows, at most 30 frames a second, and no frame loop at all while nothing moves.
+// MAP.png draws the picture for publication (dark, your network hidden) and the report's map (light, as it is);
+// parts/map/map-picture.js puts it in the «Сохранить картинку» dialog (MAP.picture).
+// MAP: init(o), attach(host | null), update(data), round(targetId), setPaused(on), paused(), renderAt(t, lostAt),
+// png(data, o), hasPlaces(data).
 // Test hooks: window.MAP_READY = true after the first complete draw; MAP.renderAt(t) draws the packet t seconds into
-// a demo round of the current data and freezes that frame, MAP.renderAt(null) the static route.
+// a round of the current data (lostAt: the ttl where that round is lost) and freezes that frame and the live
+// animation, MAP.renderAt(null) the static route.
 (function () {
   'use strict';
   var EN = document.documentElement.dataset.lang === 'en';
@@ -84,8 +91,8 @@
   var W = 0, H = 0, DPR = 1, C = {}, colorKey = '';
   var input = null, sc = null, fitPrev = null, choicePrev = {}, hits = [];
   var keys = { size: '', cache: '', l0: '', l2: '', l1: '', panel: '', sel: null, empty: null };
-  var paused = !!(CALM && CALM.matches), frozen = null, pending = false, cursor = { ttl: null, lost: false };
-  var ro = null, dprMq = null, raf = 0, menuLL = null, ready = false;
+  var paused = !!(CALM && CALM.matches), calm = paused, frozen = null, hold = false, demoLost, cursor = { ttl: null, lost: false };
+  var ro = null, dprMq = null, raf = 0, menuLL = null, ready = false, lastD = null, XP = false;
 
   // ---------- canvas helpers ----------
   function font(c, px, fam, weight) { c.font = (weight ? weight + ' ' : '') + px + 'px ' + fam; }
@@ -190,7 +197,8 @@
     panelEl = sideEl.firstChild; ribEl = sideEl.lastChild;
     emptyEl = mapEl.querySelector('.mp-empty'); menuEl = mapEl.querySelector('.mp-menu');
     cv = [].slice.call(mapEl.querySelectorAll('canvas'));
-    cv.forEach(function (c, i) { c.style.zIndex = String(i); });
+    // L0 under L2 (callouts), the packet's L1 on top: a callout that has to sit on the route does not hide it
+    cv.forEach(function (c, i) { c.style.zIndex = String(i === 1 ? 2 : i === 2 ? 1 : 0); });
     cache = document.createElement('canvas');
     mapEl.addEventListener('click', onMapClick);
     mapEl.addEventListener('mousemove', onMapMove);
@@ -228,10 +236,21 @@
     if (on) {
       if (window.ResizeObserver && !ro) { ro = new ResizeObserver(schedule); ro.observe(mapEl); ro.observe(sideEl); }
       watchDpr(true);
+      // The map scrolled out of view: the packet stops until it is back.
+      if (window.IntersectionObserver && !an.io) {
+        an.io = new IntersectionObserver(function (es) {
+          var v = es[es.length - 1].isIntersecting;
+          if (v === an.vis) return;
+          an.vis = v;
+          if (v) schedule(); else stopLoop();
+        });
+        an.io.observe(mapEl);
+      }
     } else {
       if (ro) { ro.disconnect(); ro = null; }
       watchDpr(false);
       if (raf) { cancelAnimationFrame(raf); raf = 0; }
+      if (an.io) { an.io.disconnect(); an.io = null; an.vis = true; }
     }
   }
 
@@ -289,6 +308,8 @@
         hits = [];
         closeMenu();
       }
+      lastD = null; an.pk = an.next = null; an.pend = 0;
+      stopLoop();
     } else {
       keys.empty = null;
       emptyEl.hidden = true;
@@ -300,10 +321,11 @@
       if (keys.l0 !== l0) { drawL0(d); keys.l0 = l0; }
       var l2 = sc.key + '|' + ck + '|' + d.labelKey;
       if (keys.l2 !== l2) { drawL2(d); keys.l2 = l2; }
-      drawL1(d);
+      lastD = d;
+      feed(d); // a reported round whose data came: its packet starts (or waits behind the one on its way)
+      var wait = drawL1(d);
+      if (wait >= 0) loopAfter(wait);
     }
-    // A round of the target came (MAP.round): the packet of that round starts with this data (animation: next step).
-    if (pending) pending = false;
     renderSide(d);
     if (!ready) { ready = true; window.MAP_READY = true; }
   }
@@ -415,13 +437,14 @@
         if (h.s) out.push({ indent: pre, parts: [{ t: pctT(h.s.noReplyPct), f: 'mono', c: C.text }, { t: L('проб без ответа', 'of probes unanswered'), c: C.text }] });
       }
       if (h.status === 'unreachable') out.push({ parts: lead(C.text).concat([{ t: stWord('unreachable', d.m), c: C.text }]) });
+      // (the picture for publication leaves out the distances from home: they would point at it)
       if (k === 'impossible' && fin(g.distKm)) {
-        out.push({ parts: [{ t: L('база: ', 'database: ') + placeName(g) + L(': невозможно,', ': impossible,'), c: C.text }] });
-        out.push({ parts: [{ t: kmT(g.distKm) + L(' требуют от ', ' need at least ') + msT(g.vacuumMs), c: C.text }] });
+        out.push({ parts: [{ t: L('база: ', 'database: ') + placeName(g) + (d.mask ? L(': невозможно', ': impossible') : L(': невозможно,', ': impossible,')), c: C.text }] });
+        if (!d.mask) out.push({ parts: [{ t: kmT(g.distKm) + L(' требуют от ', ' need at least ') + msT(g.vacuumMs), c: C.text }] });
       }
       if (k === 'city' && g.verdict === 'doubtful' && fin(g.distKm)) {
-        out.push({ parts: [{ t: L('база: ', 'database: ') + placeName(g) + L(': сомнительно,', ': doubtful,'), c: C.text }] });
-        out.push({ parts: [{ t: kmT(g.distKm) + L(' по волокну требуют от ', ' in fibre need at least ') + msT(g.fiberMs), c: C.text }] });
+        out.push({ parts: [{ t: L('база: ', 'database: ') + placeName(g) + (d.mask ? L(': сомнительно', ': doubtful') : L(': сомнительно,', ': doubtful,')), c: C.text }] });
+        if (!d.mask) out.push({ parts: [{ t: kmT(g.distKm) + L(' по волокну требуют от ', ' in fibre need at least ') + msT(g.fiberMs), c: C.text }] });
       }
       if (k === 'country' && i === 0) out.push({ parts: [{ t: L('известна только страна', 'only the country is known'), c: C.text }] });
       if (k === 'anchored') out.push({ parts: [{ t: L('показана у последнего точного хопа', 'shown at the last hop with a known place'), c: C.text }] });
@@ -509,7 +532,7 @@
         badges: [badgeOf(t, d)],
         rows: [
           { badges: [badgeOf(t, d)], parts: [{ t: L('по базе ', 'database says ') + placeName(g2) + L(': невозможно', ': impossible') }] },
-          { parts: [{ t: kmT(g2.distKm) + L(', свету нужно от ', ': light needs at least ') + msT(g2.vacuumMs) + L(', ответ за ', ', reply in ') + msT(g2.rttMs), c: C.text }] },
+          { parts: [{ t: d.mask ? L('ответ за ', 'reply in ') + msT(g2.rttMs) : kmT(g2.distKm) + L(', свету нужно от ', ': light needs at least ') + msT(g2.vacuumMs) + L(', ответ за ', ', reply in ') + msT(g2.rttMs), c: C.text }] },
         ] });
     }
     out.sort(function (a, b) { return a.prio - b.prio || a.first - b.first; });
@@ -584,8 +607,7 @@
   function score(job, pl, cd, ob) {
     var v = valid(job, pl, cd, ob), i;
     if (!v) return null;
-    var b = v.b, ld = v.ld, cost = 0;
-    for (i = 0; i < sc.samples.length; i++) if (inBox(sc.samples[i][0], sc.samples[i][1], b)) cost += 3;
+    var b = v.b, ld = v.ld, cov = cover(b), cost = 3 * cov;
     if (ld) {
       var n = 0;
       for (i = 0; i < ob.lines.length; i++) if (segX(ld, ob.lines[i])) n++;
@@ -595,13 +617,24 @@
     if (job.tan) cost += 10 * Math.abs(cd.ux * job.tan[0] + cd.uy * job.tan[1]);
     var prev = choicePrev[job.key];
     if (prev && prev !== pl.kind + cd.id) cost += 15;
-    return { cost: cost, b: b, ld: ld, id: pl.kind + cd.id };
+    return { cost: cost, b: b, ld: ld, id: pl.kind + cd.id, cov: cov };
+  }
+  // Route samples under a box.
+  function cover(b) {
+    var n = 0;
+    for (var i = 0; i < sc.samples.length; i++) if (inBox(sc.samples[i][0], sc.samples[i][1], b)) n++;
+    return n;
   }
   // In order, each callout takes the best place for its full plate, else for its compact one (badges only); a place
-  // that would leave a later callout no room even for its compact plate is skipped while another one does. When a
-  // hop still goes without any plate (a small map), two passes instead: first every callout gets its compact plate,
-  // in order, so no hop loses its number to a big plate placed before it; then, in the same order, a compact plate
-  // grows into the full one wherever the full one fits around all the others.
+  // that would leave a later callout no room even for its compact plate is skipped while another one does. A plate
+  // should not hide a stretch of the route (more than ROUTE samples): the line breaks under it, in the picture too.
+  // When one does, the pass runs again with a wider look ahead: of the places above, a full plate takes the
+  // cheapest that leaves the fewest plates on the route (itself, and each later callout whose last place off the
+  // route it would take); that layout is kept when it hides less of the route and labels as much. When a hop still
+  // goes without any plate (a small map), two passes instead: first every callout gets its compact plate, in order,
+  // so no hop loses its number to a big plate placed before it; then, in the same order, a compact plate grows into
+  // the full one wherever the full one fits around all the others.
+  var ROUTE = 2;
   function placeCallouts(c, d, ob) {
     var jobs = jobsOf(d), next = {}, at;
     jobs.forEach(function (job) { job.pf = measure(c, job.rows, 'f'); job.pc = measure(c, [{ badges: job.badges, parts: [] }], 'c'); });
@@ -611,28 +644,57 @@
       return o;
     }
     function fits(job, o) { return candidates(job, job.pc).some(function (cd) { return !!valid(job, job.pc, cd, o); }); }
+    // Room for the full plate off the route (which of its places are off the route, its box alone decides).
+    function fitsOff(job, o) {
+      if (!job.offC) job.offC = candidates(job, job.pf).filter(function (cd) { return cover({ x: cd.x, y: cd.y, w: job.pf.w, h: job.pf.h }) <= ROUTE; });
+      return job.offC.some(function (cd) { return !!valid(job, job.pf, cd, o); });
+    }
+    function plus(o, r) { return { taken: o.taken, marks: o.marks, lines: o.lines, plates: o.plates.concat([r.b]), leaders: r.ld ? o.leaders.concat([r.ld]) : o.leaders }; }
     // Room for the compact plate of every callout in rest once plate r is placed.
     function roomFor(rest, o, r) {
-      var o2 = { taken: o.taken, marks: o.marks, lines: o.lines, plates: o.plates.concat([r.b]), leaders: r.ld ? o.leaders.concat([r.ld]) : o.leaders };
+      var o2 = plus(o, r);
       return rest.every(function (j) { return fits(j, o2); });
     }
+    // Plates on the route once plate r is placed: r itself, and each callout in off left without a place off it.
+    function onRoute(off, o, r) {
+      var o2 = plus(o, r);
+      return (r.cov > ROUTE ? 1 : 0) + off.filter(function (j) { return !fitsOff(j, o2); }).length;
+    }
     // The cheapest place for the plate; given the callouts still to come (rest), the cheapest that leaves each of
-    // them room for its compact plate.
-    function best(job, pl, o, rest) {
-      var list = [];
+    // them room for its compact plate; given off (the later callouts that still have a place off the route for
+    // their full plate), the cheapest of those that leave the fewest plates on the route.
+    function best(job, pl, o, rest, off) {
+      var list = [], pick = null;
       candidates(job, pl).forEach(function (cd, ci) { var r = score(job, pl, cd, o); if (r) { r.ci = ci; list.push(r); } });
       list.sort(function (a, b) { return Math.abs(a.cost - b.cost) > 1e-9 ? a.cost - b.cost : a.ci - b.ci; });
-      for (var k = 0; k < list.length; k++) {
-        if (!rest || roomFor(rest, o, list[k])) { list[k].pl = pl; return list[k]; }
+      for (var k = 0; k < list.length && !(pick && pick.bad === 0); k++) {
+        var r = list[k];
+        if (rest && !roomFor(rest, o, r)) continue;
+        r.bad = off ? onRoute(off, o, r) : 0;
+        if (!pick || r.bad < pick.bad) pick = r;
       }
-      return null;
+      if (pick) pick.pl = pl;
+      return pick;
     }
     function missing(list) { return jobs.filter(function (j, i) { return !list[i]; }).length; }
-    var one = [];
-    jobs.forEach(function (job, i) {
-      var o = others(one, i), rest = jobs.slice(i + 1).filter(function (j) { return fits(j, o); });
-      one[i] = best(job, job.pf, o, rest) || best(job, job.pc, o, rest) || best(job, job.pf, o) || best(job, job.pc, o);
-    });
+    // One pass in order (look: with the wider look ahead).
+    function pass(look) {
+      var list = [];
+      jobs.forEach(function (job, i) {
+        var o = others(list, i), later = jobs.slice(i + 1), rest = later.filter(function (j) { return fits(j, o); });
+        var off = look ? later.filter(function (j) { return fitsOff(j, o); }) : null;
+        list[i] = best(job, job.pf, o, rest, off) || best(job, job.pc, o, rest) || best(job, job.pf, o) || best(job, job.pc, o);
+      });
+      return list;
+    }
+    // Plates on the route and the route samples under them; full plates.
+    function hid(list) { var n = 0, s = 0; list.forEach(function (a) { if (a && a.cov > ROUTE) { n++; s += a.cov; } }); return [n, s]; }
+    function fulls(list) { return list.filter(function (a) { return a && a.pl.kind === 'f'; }).length; }
+    var one = pass(false), h1 = hid(one);
+    if (h1[0]) {
+      var alt = pass(true), h2 = hid(alt);
+      if (missing(alt) <= missing(one) && fulls(alt) >= fulls(one) && (h2[0] < h1[0] || (h2[0] === h1[0] && h2[1] < h1[1]))) one = alt;
+    }
     at = one;
     if (missing(one)) {
       var two = [];
@@ -684,10 +746,11 @@
       });
       lines.push(cur);
     });
-    var credit = 'IP Geolocation by DB-IP (db-ip.com), CC BY 4.0';
+    // the picture has the credit in its sources line
+    var credit = XP ? '' : 'IP Geolocation by DB-IP (db-ip.com), CC BY 4.0';
     font(c, 11, SYS);
     var crw = c.measureText(credit).width;
-    var w = Math.ceil(pad * 2 + Math.max(kW + Math.max.apply(null, lines.map(function (l) { return l.w; })), crw)), h = pad * 2 + lines.length * 20 + 12;
+    var w = Math.ceil(pad * 2 + Math.max(kW + Math.max.apply(null, lines.map(function (l) { return l.w; })), crw)), h = pad * 2 + lines.length * 20 + (credit ? 12 : -4);
     return { lines: lines, kW: kW, w: w, h: h, credit: credit, box: { x: 8, y: H - 34 - h, w: w, h: h } };
   }
   function drawLegend(c, lg) {
@@ -717,6 +780,7 @@
         x += it.w + 14;
       });
     });
+    if (!lg.credit) return;
     font(c, 11, SYS); c.fillStyle = C.muted; c.textBaseline = 'middle';
     c.fillText(lg.credit, b.x + pad, b.y + b.h - pad - 5);
   }
@@ -822,21 +886,32 @@
       x += c.measureText(p.t).width + (p.gap != null ? p.gap : 10);
     });
   }
-  // Why the whole route is shown without a packet.
+  // Why no packet moves (the whole route is shown): paused with the button, or because the system asks for less
+  // motion; a picked period; the target on pause. null: the packet follows the rounds.
+  var WHY = {
+    paused: L('пауза, маршрут показан целиком', 'paused, whole route shown'),
+    calm: L('анимация выключена в системе', 'animation is off in the system'),
+    range: L('выделен период, маршрут показан целиком', 'period selected, whole route shown'),
+    target: L('цель на паузе, маршрут показан целиком', 'target paused, whole route shown'),
+    whole: L('маршрут показан целиком', 'whole route shown'),
+    wait: L('ждет следующий раунд', 'waiting for the next round'),
+  };
   function staticWhy(d) {
-    if (paused) return L('пауза, маршрут показан целиком', 'paused, whole route shown');
-    if (d.m.range) return L('выделен период, маршрут показан целиком', 'period selected, whole route shown');
-    if (d.m.paused) return L('цель на паузе, маршрут показан целиком', 'target paused, whole route shown');
-    return L('маршрут показан целиком', 'whole route shown');
+    if (paused) return calm ? WHY.calm : WHY.paused;
+    if (d.m.range) return WHY.range;
+    if (d.m.paused) return WHY.target;
+    return null;
   }
-  // The readout's room on the map: the widest of its lines (static, moving, lost), so callouts never go under it.
+  // The readout's room on the map: the widest of its lines (every reason, moving, lost, arrived), so callouts never
+  // go under it. The picture has no readout.
   function hudBox(c, d) {
-    var rn = { t: L('раунд ', 'round ') + (d.m.rounds || 0), c: C.muted }, mx = d.hops.length ? d.hops[d.hops.length - 1].ttl : 1, w = 0;
-    [
-      [{ t: L('пакет', 'packet') }, { t: L('выделен период, маршрут показан целиком', 'period selected, whole route shown') }],
+    if (XP) return { x: 8, y: 8, w: 0, h: 0 };
+    var rn = { t: L('раунд ', 'round ') + Math.max(99999, an.n, d.m.rounds || 0), c: C.muted }, mx = d.hops.length ? d.hops[d.hops.length - 1].ttl : 1, w = 0;
+    Object.keys(WHY).map(function (k) { return [{ t: L('пакет', 'packet') }, { t: WHY[k] }]; }).concat([
       [rn, { t: L('хоп ', 'hop ') + mx + ' → ' + mx, f: 'mono' }, { t: 'RTT ' + ms1(999.9), f: 'mono' }],
       [rn, { t: L('потеря на хопе ', 'lost at hop ') + mx }, { t: L('ответа нет', 'no reply') }],
-    ].forEach(function (ps) { w = Math.max(w, ps.reduce(function (s, p) { return s + partW(c, p) + 10; }, -10) + 16); });
+      [rn, { t: L('ответ цели', 'target replied') }, { t: ms1(999.9), f: 'mono' }],
+    ]).forEach(function (ps) { w = Math.max(w, ps.reduce(function (s, p) { return s + partW(c, p) + 10; }, -10) + 16); });
     return { x: 8, y: 8, w: Math.ceil(w), h: 28 };
   }
   // Where a round of the current data ends: at the destination, or, when the destination's last round was lost, at
@@ -852,34 +927,64 @@
     for (var k = 0; k < pth.length; k++) if (pth[k].ttl === at) return k;
     return -1;
   }
+  function lossTtl(d, pth) { var i = lossIndex(d, pth); return i >= 0 ? pth[i].ttl : null; }
   function diamond(c, x, y, r) { c.beginPath(); c.moveTo(x, y - r); c.lineTo(x + r, y); c.lineTo(x, y + r); c.lineTo(x - r, y); c.closePath(); c.fill(); }
-  // Frame t seconds into a round: the clock runs 2.4 s for the whole route (0.008-0.3 s per ms of RTT), a trail of
-  // five squares 0.017 c_dest apart; a lost round leaves a red cross for 1.5 s, a reply rests at the target as long.
-  function frame(c, d, t) {
-    var pth = sc.path, n = pth.length;
-    if (!n) return null;
-    var cd = pth[n - 1].c, spm = Math.max(0.008, Math.min(0.3, 2.4 / cd)), r = t / spm, rn = { t: L('раунд ', 'round ') + (d.m.rounds || 1), c: C.muted };
-    var li = lossIndex(d, pth);
-    if (li >= 0 && r >= pth[li].c) {
-      if ((r - pth[li].c) * spm > 1.5) return null;
-      var p = pth[li].p;
-      c.fillStyle = C.well; c.fillRect(p[0] - 10, p[1] - 10, 20, 20);
-      c.strokeStyle = C.loss; c.lineWidth = 3.5; c.lineCap = 'square'; c.beginPath();
-      c.moveTo(p[0] - 6.5, p[1] - 6.5); c.lineTo(p[0] + 6.5, p[1] + 6.5); c.moveTo(p[0] + 6.5, p[1] - 6.5); c.lineTo(p[0] - 6.5, p[1] + 6.5); c.stroke();
-      c.lineCap = 'butt';
-      hudLine(c, [rn, { t: L('потеря на хопе ', 'lost at hop ') + pth[li].ttl, c: C['loss-text'] }, { t: L('ответа нет', 'no reply'), c: C.text }]);
-      return { ttl: pth[li].ttl, lost: true };
+
+  // ---------- the packet of one round ----------
+  // The clock: every hop at its window minimum, hops without one in between, made monotone (MAPG.clock); the whole
+  // route takes 2.4 s (0.008-0.3 s per ms of RTT); a trail of five squares 0.017 c_dest apart. A lost round stops at
+  // the hop where its loss starts and leaves a red cross there for 1.5 s; a reply rests at the target for 0.7 s (as
+  // in the approved mockup).
+  var REST = 0.7, CROSS = 1.5, FRAME = 33, rid = 0;
+  // The packet's clock with this draw's numbers: the layout keeps the path, the window minimums move with live data.
+  function retime(d) {
+    G.clock(sc.path, function (ttl) { var h = d.byTtl[ttl]; return h && h.full ? h.full.min : null; });
+  }
+  // A round of the current data. lostAt: the ttl where it is lost (null: it reached the target; undefined: as the
+  // data says). It keeps its own clock, so a snapshot that comes while it is on its way does not move it.
+  function roundOf(d, lostAt) {
+    retime(d);
+    var pth = sc.path, n = pth.length, c = {}, li = lostAt !== undefined ? lostAt : lossTtl(d, pth), stop = null;
+    pth.forEach(function (e) { c[e.ttl] = e.c; if (e.ttl === li) stop = e.c; });
+    if (stop == null) li = null;
+    var cd = n ? pth[n - 1].c : 1, spm = Math.max(0.008, Math.min(0.3, 2.4 / cd)), last = n ? d.byTtl[pth[n - 1].ttl] : null;
+    // where a reply ends (the target, or the last hop that answers) and its time: the latest reply (this round's),
+    // else the minimum
+    var ms = last && last.full && fin(last.full.last) ? last.full.last : n && pth[n - 1].raw != null ? pth[n - 1].raw : null;
+    if (stop == null) stop = cd;
+    return {
+      id: ++rid, c: c, li: li, spm: spm, move: stop * spm, end: stop * spm + (li != null ? CROSS : REST), ms: ms, n: d.m.rounds || 1, t0: 0,
+      dest: !last || !!last.dest, endTtl: n ? pth[n - 1].ttl : null, sig: pth.map(function (e) { return e.c.toFixed(2); }).join(',') + '>' + li,
+    };
+  }
+  // The path with the round's own clock (the points are the layout's: they follow a resize).
+  function timed(R) {
+    return sc.path.map(function (e) { return { ttl: e.ttl, p: e.p, poly: e.poly, raw: e.raw, c: R.c[e.ttl] != null ? R.c[e.ttl] : e.c }; });
+  }
+  function cross(c, p) {
+    c.fillStyle = C.well; c.fillRect(p[0] - 10, p[1] - 10, 20, 20);
+    c.strokeStyle = C.loss; c.lineWidth = 3.5; c.lineCap = 'square'; c.beginPath();
+    c.moveTo(p[0] - 6.5, p[1] - 6.5); c.lineTo(p[0] + 6.5, p[1] + 6.5); c.moveTo(p[0] + 6.5, p[1] - 6.5); c.lineTo(p[0] - 6.5, p[1] + 6.5); c.stroke();
+    c.lineCap = 'butt';
+  }
+  // The packet's head: a diamond on a sea-coloured knockout, so it reads over the route.
+  function head(c, p) { c.fillStyle = C.well; diamond(c, p[0], p[1], 8.5); c.fillStyle = C.packet; diamond(c, p[0], p[1], 5.5); }
+  function hudRound(c, R) {
+    var rn = { t: L('раунд ', 'round ') + R.n, c: C.muted };
+    if (R.li != null) hudLine(c, [rn, { t: L('потеря на хопе ', 'lost at hop ') + R.li, c: C['loss-text'] }, { t: L('ответа нет', 'no reply'), c: C.text }]);
+    else {
+      hudLine(c, [rn, { t: R.dest ? L('ответ цели', 'target replied') : L('ответ хопа ', 'reply from hop ') + R.endTtl, c: C.text }]
+        .concat(R.ms != null ? [{ t: ms1(R.ms), f: 'mono', c: C.title }] : []));
     }
-    if (r >= cd) {
-      if ((r - cd) * spm > 1.5) return null;
-      var e = pth[n - 1].p;
-      c.fillStyle = C.well; diamond(c, e[0], e[1], 8.5);
-      c.fillStyle = C.packet; diamond(c, e[0], e[1], 5.5);
-      // the measured minimum of the target, not its clock (made monotone, it can run a little ahead)
-      hudLine(c, [rn, { t: L('ответ цели', 'target replied'), c: C.text }, { t: ms1(pth[n - 1].raw != null ? pth[n - 1].raw : cd), f: 'mono', c: C.title }]);
-      return { ttl: pth[n - 1].ttl, lost: false };
-    }
-    var pos = G.posAt(pth, r);
+  }
+  // Frame t seconds into round R, or null once the round is over. Returns the hop for the ribbon's cursor.
+  function frame(c, d, t, R) {
+    var pth = timed(R), n = pth.length, spm = R.spm, r = t / spm, li = -1, k;
+    if (!n || t >= R.end) return null;
+    for (k = 0; k < n; k++) if (pth[k].ttl === R.li) li = k;
+    if (li >= 0 && r >= pth[li].c) { cross(c, pth[li].p); hudRound(c, R); return { ttl: R.li, lost: true }; }
+    if (li < 0 && r >= pth[n - 1].c) { head(c, pth[n - 1].p); hudRound(c, R); return { ttl: pth[n - 1].ttl, lost: false }; }
+    var pos = G.posAt(pth, r), cd = pth[n - 1].c;
     c.fillStyle = C.title;
     [4, 4, 3, 3, 2].forEach(function (s, i) {
       var rr = r - (i + 1) * 0.017 * cd;
@@ -887,25 +992,130 @@
       var q = G.posAt(pth, rr).p;
       c.fillRect(Math.round(q[0] - s / 2), Math.round(q[1] - s / 2), s, s);
     });
-    c.fillStyle = C.well; diamond(c, pos.p[0], pos.p[1], 8.5);
-    c.fillStyle = C.packet; diamond(c, pos.p[0], pos.p[1], 5.5);
-    hudLine(c, [rn, { t: L('хоп ', 'hop ') + pos.lastTtl + ' → ' + (pos.nextTtl != null ? pos.nextTtl : pos.lastTtl), f: 'mono', c: C.text }, { t: 'RTT ' + ms1(r), f: 'mono', c: C.title }]);
+    head(c, pos.p);
+    // ttl 0 is the home: «дом → 1» for the first moments of a round
+    hudLine(c, [{ t: L('раунд ', 'round ') + R.n, c: C.muted }, { t: (pos.lastTtl ? L('хоп ', 'hop ') + pos.lastTtl : L('дом', 'home')) + ' → ' + (pos.nextTtl != null ? pos.nextTtl : pos.lastTtl), f: 'mono', c: C.text },
+      { t: 'RTT ' + ms1(r), f: 'mono', c: C.title }]);
     return { ttl: pos.lastTtl || null, lost: false };
   }
-  // The packet's clock with this draw's numbers: the layout keeps the path, the window minimums move with live data.
-  // Returns what a frame depends on: the clock and where a round of this data ends.
-  function retime(d) {
-    G.clock(sc.path, function (ttl) { var h = d.byTtl[ttl]; return h && h.full ? h.full.min : null; });
-    return sc.path.map(function (e) { return e.c.toFixed(2); }).join(',') + '>' + lossIndex(d, sc.path);
-  }
+  function demoRound(d) { var R = roundOf(d, demoLost); R.id = 'demo'; return R; }
+  // L1: the packet on its way; else the last round's result (or that a round is awaited), or why the map is static.
+  // Returns how long this picture holds, in ms (-1: until something changes).
   function drawL1(d) {
-    var c = cx[1], k = (frozen == null ? 's:' + staticWhy(d) : 'f:' + frozen + ':' + retime(d)) + '|' + keys.l0 + '|' + keys.l2;
-    if (k === keys.l1) return;
-    keys.l1 = k;
-    c.clearRect(0, 0, W, H);
-    var cur = frozen != null ? frame(c, d, frozen) : null;
-    if (!cur) hudLine(c, [{ t: L('пакет', 'packet'), c: C.muted }, { t: staticWhy(d), c: C.text }]);
-    cursor = cur ? { ttl: cur.ttl, lost: cur.lost } : { ttl: null, lost: false };
+    var c = cx[1], why = staticWhy(d), R = null, t = 0, cur = null;
+    if (hold) { if (frozen != null) { R = demoRound(d); t = frozen; } }
+    else if (!why) { advance(); R = an.pk; t = R ? (now() - R.t0) / 1000 : 0; }
+    var live = !!R && t < R.end, moving = live && t < R.move;
+    var k = (live ? (moving ? 'm' + t : 'e' + R.id) + (hold ? R.sig : '') : 's' + (why || (hold ? '' : an.last ? 'r' + an.last.id : 'w'))) + '|' + keys.l0 + '|' + keys.l2;
+    if (k !== keys.l1) {
+      keys.l1 = k;
+      c.clearRect(0, 0, W, H);
+      cur = live ? frame(c, d, t, R) : null;
+      if (!cur) hudIdle(c, why);
+      cursor = cur ? { ttl: cur.ttl, lost: cur.lost } : { ttl: null, lost: false };
+    }
+    if (hold || !live) return -1;
+    return moving ? FRAME : Math.max(1, Math.ceil((R.end - t) * 1000));
+  }
+  function hudIdle(c, why) {
+    var pk = { t: L('пакет', 'packet'), c: C.muted };
+    if (why || hold) hudLine(c, [pk, { t: why || WHY.whole, c: C.text }]);
+    else if (an.last) hudRound(c, an.last);
+    else hudLine(c, [pk, { t: WHY.wait, c: C.text }]);
+  }
+
+  // ---------- live rounds ----------
+  // A "round" event of the traced target (MAP.round) is noted with its time; the first snapshot asked for after it
+  // (Live.askedAt) has that round in it, and its numbers make the round's packet. One packet is on its way at a time:
+  // a round that comes meanwhile waits for it, a newer one takes the waiting one's place. While the map is static
+  // (WHY) there are no packets and rounds are not kept. an: pend (time of the oldest round not yet in the data),
+  // newest, snap (WT.trace then: without Live.askedAt any newer snapshot counts), ev (rounds reported), n (number of
+  // the last packet's round), pk (on its way), next (waiting), last (ended last: the readout keeps its result), raf
+  // and timer (the frame loop), vis (the map is on screen), min (the window is minimised), tid (the row the rounds
+  // are of).
+  var an = { pend: 0, newest: 0, snap: null, ev: 0, evAt: 0, n: 0, pk: null, next: null, last: null, raf: 0, timer: 0, vis: true, min: false, minAt: 0, minPoll: 0, io: null, tid: undefined };
+  function now() { return window.performance && performance.now ? performance.now() : Date.now(); }
+  function onRound() {
+    if (hold) return;
+    var t = Date.now();
+    an.ev++;
+    if (!an.pend) { an.pend = t; an.snap = WT.trace; }
+    an.newest = t;
+  }
+  function fresh() {
+    var lv = window.Live;
+    return lv && lv.askedAt ? lv.askedAt >= an.pend : WT.trace !== an.snap;
+  }
+  function quiet() { an.pk = an.next = an.last = null; an.pend = 0; stopLoop(); }
+  function feed(d) {
+    if (hold) return;
+    // another row of the target (the probe switch): its packets and their numbers start afresh
+    var tid = d.m.target ? d.m.target.id : null;
+    if (tid !== an.tid) {
+      if (an.tid !== undefined) { an.n = 0; an.evAt = an.ev; quiet(); }
+      an.tid = tid;
+    }
+    if (staticWhy(d)) { quiet(); return; }
+    if (!an.pend || !fresh()) return;
+    var lv = window.Live, asked = lv && lv.askedAt ? lv.askedAt : Date.now(), R = roundOf(d);
+    // the round's number: the first packet's is the window's rounds, then one more for every reported round (another
+    // window does not make it jump)
+    R.n = an.n ? an.n + Math.max(1, an.ev - an.evAt) : Math.max(1, d.m.rounds || 0);
+    an.n = R.n; an.evAt = an.ev;
+    an.pend = an.newest > asked ? an.newest : 0;
+    if (an.pend) an.snap = WT.trace;
+    advance();
+    if (an.pk) an.next = R; else { R.t0 = now(); an.pk = R; }
+  }
+  // The packet on its way is over: its round's result stays in the readout, the waiting packet starts.
+  function advance() {
+    var t = now();
+    while (an.pk && t - an.pk.t0 >= an.pk.end * 1000) {
+      an.last = an.pk;
+      an.pk = an.next; an.next = null;
+      if (an.pk) an.pk.t0 = t;
+    }
+  }
+
+  // ---------- frame loop: only while a packet moves or a cross / a reply waits to go; at most 30 frames a second ----------
+  function canRun() { return !hold && !!host && !!stage && stage.isConnected && an.vis && !document.hidden && !an.min && !!lastD && !!sc; }
+  function loopAfter(ms) {
+    if (an.raf || an.timer || !canRun()) return;
+    an.timer = setTimeout(function () { an.timer = 0; an.raf = requestAnimationFrame(tick); }, Math.max(0, ms));
+  }
+  function stopLoop() {
+    if (an.timer) clearTimeout(an.timer);
+    if (an.raf) cancelAnimationFrame(an.raf);
+    an.timer = an.raf = 0;
+  }
+  function tick(ts) {
+    an.raf = 0;
+    if (!canRun()) return;
+    var wait = drawL1(lastD);
+    ribCursor();
+    if (wait < 0) return;
+    loopAfter(wait - (now() - ts)); // counted from this frame's time: the next one comes 33 ms or more later
+    checkMin();
+  }
+  // A minimised window may still count as visible (WebView2): in the app the window itself is asked, at most once a
+  // second while a packet moves; while it is minimised the packet waits and the question repeats every second.
+  function appWin() {
+    try { var T = window.__TAURI__; return T && T.window && T.window.getCurrentWindow ? T.window.getCurrentWindow() : null; } catch (e) { return null; }
+  }
+  function checkMin() {
+    var w = appWin(), t = Date.now();
+    if (!w || !w.isMinimized || t - an.minAt < 1000) return;
+    an.minAt = t;
+    w.isMinimized().then(function (m) { if (m && !an.min) { an.min = true; stopLoop(); pollMin(); } }, function () { /* not allowed: the packet keeps going */ });
+  }
+  function pollMin() {
+    if (an.minPoll) return;
+    an.minPoll = setTimeout(function () {
+      an.minPoll = 0;
+      var w = appWin();
+      if (!an.min || !w) { an.min = false; return; }
+      w.isMinimized().then(function (m) { if (m) pollMin(); else { an.min = false; schedule(); } }, function () { an.min = false; schedule(); });
+    }, 1000);
   }
 
   // ---------- side column: the selected hop and the ribbon ----------
@@ -1207,35 +1417,263 @@
     if (opt.onSelect) opt.onSelect(+rows[j].getAttribute('data-mp-ttl'));
   }
 
+  // ---------- the picture: for publication (always dark, your network hidden) and the report's map (light, as is) ----------
+  // MAP.png(data | null, { size: 'wide' | 'square', theme: 'dark' | 'light', mask }) draws at 2× of 1200×675 or
+  // 1080×1080: a header line (the target and the window), the map as on screen with its callouts, legend and scale,
+  // without the packet and its readout, the hop ribbon (right of the map; under it in the square) and the sources.
+  // data: {m, geo, home} as MAP.update takes it (null: the map's own). Returns a data: URL of the PNG, or null when
+  // the route has no places. The live map's drawing state is put aside while the picture is drawn, then comes back.
+  var SIZES = { wide: [1200, 675], square: [1080, 1080] };
+  // The colours of a theme from the tokens, read on a hidden probe with that data-theme.
+  function themeColors(theme) {
+    var el = document.createElement('div'), o = {};
+    el.setAttribute('data-theme', theme);
+    el.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden';
+    document.body.appendChild(el);
+    var cs = getComputedStyle(el);
+    TOK.forEach(function (k) { o[k] = cs.getPropertyValue('--' + k).trim(); });
+    el.parentNode.removeChild(el);
+    return o;
+  }
+  // For publication: own hops (your network, the provider's CGNAT) and the first public hops until the AS number
+  // changes (a hop without one does not change it; without AS data: the first two) lose their address, name and
+  // place; they and the home go to the home country's label point (trace.home.cc; a home set by hand has none: the
+  // country of those provider hops; without one, the first place left), so the home callout says only «ваша сеть».
+  // The run of public hops ends at the destination: the target is in the picture's header anyway, and a short route
+  // keeps something to show; a destination in the provider's AS (its DNS, say) keeps its address but only its
+  // country. Callouts leave out the distances from home too (two of them would point at it).
+  function masked(inp) {
+    var hops = inp.m.hops || [], hide = {}, first = null, k = 0, CP = window.WT_COUNTRY_POINTS || {};
+    hops.forEach(function (x) { if (x.geo && x.geo.level === 'own') hide[x.ttl] = true; });
+    for (var i = 0; i < hops.length; i++) {
+      var h = hops[i];
+      if (!h.addr || hide[h.ttl]) continue;
+      if (h.dest) break;
+      var asn = h.geo && h.geo.asn != null ? h.geo.asn : null;
+      if (first == null ? k >= 2 : asn != null && asn !== first) break;
+      if (first == null) first = asn;
+      hide[h.ttl] = true; k++;
+    }
+    var own = { level: 'own', special: null, city: null, region: null, cc: null, country: null, lat: null, lon: null, asn: null, asOrg: null,
+      distKm: null, fiberMs: null, vacuumMs: null, rttMs: null, extraMs: null, verdict: null };
+    var dest = hops.filter(function (x) { return x.dest && !hide[x.ttl] && x.addr && x.geo && first != null && x.geo.asn === first; })[0] || null;
+    var dpt = dest && dest.geo.cc ? CP[dest.geo.cc] || null : null;
+    var out = hops.map(function (x) {
+      if (hide[x.ttl]) return Object.assign({}, x, { addr: L('скрыт', 'hidden'), name: null, masked: true, geo: own });
+      if (x !== dest) return x;
+      return Object.assign({}, x, { name: null, geo: Object.assign({}, own, dpt ? { level: 'country', cc: dest.geo.cc, country: dest.geo.country || null, lat: dpt[1], lon: dpt[0] } : { level: 'none' }) });
+    });
+    var home = inp.home, cc = home && home.cc;
+    if (!cc) hops.forEach(function (x) { if (!cc && hide[x.ttl] && x.geo && x.geo.cc) cc = x.geo.cc; });
+    var pt = cc ? CP[cc] || null : null;
+    if (!pt) {
+      var f = G.kinds(out.filter(function (x) { return !x.masked; }), null, window.WT_COUNTRY_POINTS).filter(function (n) { return n.kind === 'city' || n.kind === 'country'; })[0];
+      pt = f ? f.ll : null;
+    }
+    return {
+      m: Object.assign({}, inp.m, { hops: out }), geo: inp.geo,
+      home: home && pt ? { lat: pt[1], lon: pt[0], city: null, cc: cc || null, country: null, source: 'auto', ttl: null } : null,
+    };
+  }
+  function ctx2d(w, h, k) {
+    var c = document.createElement('canvas');
+    c.width = Math.round(w * k); c.height = Math.round(h * k);
+    var g = c.getContext('2d');
+    g.setTransform(k, 0, 0, k, 0, 0);
+    return g;
+  }
+  function rrect(g, x, y, w, h, r) {
+    g.beginPath(); g.moveTo(x + r, y);
+    g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+    g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+  }
+  // A text cut to a width with an ellipsis.
+  function fitText(g, s, w) {
+    s = String(s);
+    if (g.measureText(s).width <= w) return s;
+    while (s.length > 1 && g.measureText(s + '…').width > w) s = s.slice(0, -1);
+    return s + '…';
+  }
+  // The status mark of a ribbon line, 10×10 at (x, y), as on screen.
+  function glyphPic(g, st, x, y) {
+    if (st === 'loss') { g.fillStyle = C.loss; g.fillRect(x, y, 10, 10); }
+    else if (st === 'partial') { g.fillStyle = C.partial; [0, 4, 8].forEach(function (k) { g.fillRect(x + k, y, 2, 10); }); }
+    else if (st === 'silent') {
+      g.save(); g.beginPath(); g.rect(x, y, 10, 10); g.clip();
+      g.strokeStyle = C.hatch; g.lineWidth = 1.6; g.beginPath();
+      g.moveTo(x - 2, y + 4); g.lineTo(x + 4, y - 2); g.moveTo(x - 2, y + 10); g.lineTo(x + 10, y - 2); g.moveTo(x + 4, y + 12); g.lineTo(x + 12, y + 4);
+      g.stroke(); g.restore();
+    } else if (st === 'noreply' || st === 'unreachable') { g.fillStyle = C.muted; rrect(g, x + 1, y + 1, 8, 8, 1.5); g.fill(); }
+  }
+  var RIB_TOP = 12 + 24 + 22, RIB_PAD = 10; // the ribbon's head and column names, its bottom padding
+  function hopsRu(n) { var a = n % 10, b = n % 100; return a === 1 && b !== 11 ? 'хоп' : a >= 2 && a <= 4 && (b < 12 || b > 14) ? 'хопа' : 'хопов'; }
+  function ribNeed(n, cols, rowH) { return RIB_TOP + Math.ceil(n / cols) * rowH + RIB_PAD; }
+  // The hop ribbon of the picture: ttl, address (a hidden one in grey), min RTT and loss over the window or the picked
+  // period, the status mark and words; a long route in two columns or in lower lines, what does not fit is counted.
+  function ribbonPic(g, d, R) {
+    var m = d.m, hs = d.hops, n = hs.length, px = 12, inner = R.w - 2 * px, avail = R.h - RIB_TOP - RIB_PAD;
+    g.fillStyle = C.well; rrect(g, R.x, R.y, R.w, R.h, 8); g.fill();
+    g.textBaseline = 'middle'; g.textAlign = 'left';
+    var title = L('Лента хопов', 'Hops'), ty = R.y + 12 + 11;
+    font(g, 13, SYS, 600); g.fillStyle = C.title; g.fillText(title, R.x + px, ty);
+    var tw = g.measureText(title).width;
+    font(g, 12, SYS); g.fillStyle = C.muted; g.textAlign = 'right';
+    g.fillText(fitText(g, m.range ? L('мин. RTT и потери за выделенный период', 'min RTT and loss over the selected period') : L('мин. RTT и потери за ', 'min RTT and loss over ') + winOf(m), inner - tw - 12), R.x + R.w - px, ty);
+    g.textAlign = 'left';
+    font(g, 12, MONO);
+    var ch = g.measureText('0').width, need = 33.5 * ch, cols = n * 22 > avail && inner >= 2 * need + 24 + 2 * 60 ? 2 : 1;
+    var colW = (inner - (cols - 1) * 24) / cols, per = Math.ceil(n / cols), rowH = Math.max(12, Math.min(22, Math.floor(avail / Math.max(1, per))));
+    var fit = Math.floor(avail / rowH), words = colW - need >= 60;
+    for (var col = 0; col < cols; col++) {
+      var x = R.x + px + col * (colW + 24), y = R.y + RIB_TOP - 11;
+      // column names
+      font(g, 12, MONO); g.fillStyle = C.muted; g.textAlign = 'right';
+      g.fillText('#', x + 2 * ch, y); g.fillText(L('мин', 'min'), x + 23.5 * ch, y); g.fillText(L('потери', 'loss'), x + 30.5 * ch, y);
+      g.textAlign = 'left'; g.fillText(L('адрес', 'address'), x + 3 * ch, y);
+      if (words) { font(g, 12, SYS); g.fillText(L('статус', 'status'), x + need + 4, y); }
+      var list = hs.slice(col * per, col * per + per), more = 0;
+      if (list.length > fit) { more = list.length - (fit - 1); list = list.slice(0, fit - 1).concat([null]); }
+      list.forEach(function (h, i) {
+        var cy = R.y + RIB_TOP + i * rowH + rowH / 2;
+        font(g, 12, MONO); g.textAlign = 'left';
+        if (!h) { g.fillStyle = C.muted; g.fillText(L('и еще ' + more + ' ' + hopsRu(more), 'and ' + more + ' more ' + (more === 1 ? 'hop' : 'hops')), x + 3 * ch, cy); return; }
+        var s = h.s, k = h.origin || h.status === 'loss' ? 'loss' : h.status === 'partial' ? 'partial' : 'other';
+        g.fillStyle = C.text; g.textAlign = 'right';
+        g.fillText(String(h.ttl), x + 2 * ch, cy);
+        g.fillText(s && fin(s.min) ? nf(s.min) : '*', x + 23.5 * ch, cy);
+        g.fillText(s ? pctT(s.lossPct) : '*', x + 30.5 * ch, cy);
+        g.textAlign = 'left'; g.fillStyle = h.masked ? C.muted : C.text;
+        g.fillText(fitText(g, h.addr || '*', 15.3 * ch), x + 3 * ch, cy);
+        glyphPic(g, h.status, Math.round(x + 32 * ch - 5), Math.round(cy - 5));
+        if (words) {
+          font(g, 12, SYS); g.fillStyle = k === 'loss' ? C['loss-text'] : k === 'partial' ? C['partial-text'] : C.text;
+          g.fillText(fitText(g, stOf(h, m), colW - need - 4), x + need + 4, cy);
+        }
+      });
+    }
+  }
+  function png(data, o) {
+    o = o || {};
+    var inp = data || input;
+    if (!inp || !inp.m || inp.m.kind !== 'trace') return null;
+    var src = o.mask ? masked(inp) : inp;
+    var d = derive({ m: Object.assign({}, src.m, { selected: null }), geo: src.geo, home: src.home });
+    if (d.empty) return null;
+    d.mask = !!o.mask;
+    var sz = SIZES[o.size] || SIZES.wide, PW = sz[0], PH = sz[1], K = 2, pad = 24, top = 48, foot = 32, gap = 16, bodyH = PH - top - foot, mapR, ribR;
+    if (PW > PH) {
+      // the ribbon as wide as the status words of its usual lines need (the app's 448 px column at 1320 px)
+      mapR = { x: pad, y: top, w: PW - 2 * pad - 412 - gap, h: bodyH };
+      ribR = { x: pad + mapR.w + gap, y: top, w: 412, h: bodyH };
+    } else {
+      var cap = Math.round(bodyH * 0.4), rh = ribNeed(d.hops.length, 1, 22);
+      if (rh > cap) rh = Math.min(cap, ribNeed(d.hops.length, 2, 22));
+      mapR = { x: pad, y: top, w: PW - 2 * pad, h: bodyH - rh - gap };
+      ribR = { x: pad, y: top + mapR.h + gap, w: PW - 2 * pad, h: rh };
+    }
+    var keep = { W: W, H: H, DPR: DPR, C: C, sc: sc, fitPrev: fitPrev, choicePrev: choicePrev, hits: hits, cx: cx, cache: cache, cacheCx: cacheCx };
+    var out = document.createElement('canvas');
+    out.width = PW * K; out.height = PH * K;
+    try {
+      XP = true;
+      C = themeColors(o.theme === 'light' ? 'light' : 'dark');
+      W = mapR.w; H = mapR.h; DPR = K; fitPrev = null; choicePrev = {}; hits = []; sc = null;
+      cx = [ctx2d(W, H, K), null, ctx2d(W, H, K)];
+      cacheCx = ctx2d(W, H, K); cache = cacheCx.canvas;
+      layout(d, 'png' + PW + 'x' + PH, 'png');
+      drawCache(); drawL0(d); drawL2(d);
+      var g = out.getContext('2d'), m = d.m, tg = m.target || {}, x = pad;
+      g.setTransform(K, 0, 0, K, 0, 0);
+      g.fillStyle = C.layer; g.fillRect(0, 0, PW, PH);
+      // the target and the window
+      g.textBaseline = 'middle'; g.textAlign = 'left';
+      font(g, 16, MONO, 600); g.fillStyle = C.title; g.fillText(tg.host || '', x, 25);
+      x += g.measureText(tg.host || '').width + 12;
+      font(g, 13, SYS);
+      if (tg.name && tg.name !== tg.host) { g.fillStyle = C.text; g.fillText(tg.name, x, 25); x += g.measureText(tg.name).width + 12; }
+      g.fillStyle = C.muted;
+      g.fillText(m.range ? L(probeName(m) + ', выделенный период', probeName(m) + ', selected period') : L(probeName(m) + ', окно ' + winOf(m), probeName(m) + ', ' + winOf(m) + ' window'), x, 25);
+      // the map: its well, then the land, route and markers, then the callouts, legend and scale
+      g.save(); rrect(g, mapR.x, mapR.y, mapR.w, mapR.h, 8); g.clip();
+      g.fillStyle = C.well; g.fillRect(mapR.x, mapR.y, mapR.w, mapR.h);
+      g.drawImage(cx[0].canvas, mapR.x, mapR.y, mapR.w, mapR.h);
+      g.drawImage(cx[2].canvas, mapR.x, mapR.y, mapR.w, mapR.h);
+      g.restore();
+      ribbonPic(g, d, ribR);
+      // the sources
+      var sim = d.geo && d.geo.state === 'simulated';
+      font(g, 12, SYS); g.fillStyle = C.muted; g.textAlign = 'left'; g.textBaseline = 'middle';
+      g.fillText('Whilo Trace · ' + (sim ? L('места: имитация', 'places: simulated') : 'IP Geolocation by DB-IP (db-ip.com), CC BY 4.0') + ' · ' +
+        L('суша: Natural Earth', 'land: Natural Earth'), pad, PH - foot / 2);
+    } finally {
+      XP = false;
+      W = keep.W; H = keep.H; DPR = keep.DPR; C = keep.C; sc = keep.sc; fitPrev = keep.fitPrev; choicePrev = keep.choicePrev; hits = keep.hits;
+      cx = keep.cx; cache = keep.cache; cacheCx = keep.cacheCx;
+    }
+    return out.toDataURL('image/png');
+  }
+  // Whether the route of data (null: the map's own) has any place to draw.
+  function hasPlaces(data) {
+    var inp = data || input;
+    return !!(inp && inp.m && inp.m.kind === 'trace' && !derive(inp).empty);
+  }
+
   // ---------- public ----------
   function init(o) {
     opt = o || {};
     // Theme: no event fires when it changes (base/theme.js), so the map watches the attribute and the system theme.
     if (window.MutationObserver) new MutationObserver(schedule).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     onMq(DARK, schedule);
+    // A hidden window (another tab in front; minimised, where the system says so): the packet waits until it is back.
+    document.addEventListener('visibilitychange', function () { if (document.hidden) stopLoop(); else schedule(); });
+    // The system's reduced-motion setting changed while the page is open: the map follows it unless the button was
+    // used since; the screen hears it (onPause) to change the button.
+    onMq(CALM, function () {
+      var on = !!(CALM && CALM.matches);
+      if (on === paused || (!on && !calm)) return;
+      paused = on; calm = on;
+      if (on) quiet();
+      keys.l1 = ''; draw();
+      if (opt.onPause) opt.onPause(on);
+    });
   }
-  // The hop card's host while the card shows «Карта», or null: the stage (canvases, caches) moves along.
+  // The hop card's host while the card shows «Карта», or null: the stage (canvases, caches) moves along; without a
+  // host no packet runs.
   function attach(h) {
     if (h === host) return;
     if (host && stage && stage.parentNode === host) host.removeChild(stage);
     host = h || null;
-    if (!host) { closeMenu(false); observe(false); return; }
+    if (!host) {
+      closeMenu(false); observe(false); quiet(); lastD = null;
+      if (an.minPoll) { clearTimeout(an.minPoll); an.minPoll = 0; }
+      an.min = false;
+      return;
+    }
     if (!stage) build();
     host.appendChild(stage);
     observe(true);
   }
   function update(data) { input = data; draw(); }
-  function renderAt(t) {
+  // Test hook: the frame t seconds into a round of the current data, frozen (lostAt: the ttl where that round is lost,
+  // 0: it reaches the target; omitted: as the data says), or the static route (t null). Live rounds stay off after it.
+  function renderAt(t, lostAt) {
+    hold = true;
     frozen = t == null ? null : +t;
+    demoLost = lostAt == null ? undefined : +lostAt || null;
+    quiet();
     keys.l1 = '';
     draw();
     return true;
   }
   window.MAP = {
-    init: init, attach: attach, update: update, renderAt: renderAt,
-    // A round of the traced target finished: its packet starts with the next snapshot.
-    round: function () { pending = true; },
-    setPaused: function (on) { paused = !!on; keys.l1 = ''; draw(); },
+    init: init, attach: attach, update: update, renderAt: renderAt, png: png, hasPlaces: hasPlaces,
+    // A round of the traced target finished: its packet starts with the first snapshot that has it.
+    round: onRound,
+    setPaused: function (on) {
+      paused = !!on; calm = false;
+      if (paused) quiet();
+      keys.l1 = ''; draw();
+    },
     paused: function () { return paused; },
   };
 })();

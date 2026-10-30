@@ -1,5 +1,6 @@
 /* Whilo Trace, part "route map" (parts/map) on the trace screen: the hop card's head (it belongs to the trace part but
-   exists only with the map), the map stage, the side column and the «new places database» dialog.
+   exists only with the map), the map stage, the side column, the «new places database» dialog and the «Сохранить
+   картинку» dialog.
    Layout and look of the approved mockup C «Телеметрия». Variables from base/tokens.css only; flat: fills, no borders,
    shadows or gradients. Loaded before screens/app.css. */
 
@@ -131,6 +132,18 @@
 .mp-dlg .rp-body .mp-prog-t { margin-top: 6px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .mp-prog { height: 8px; margin-top: 14px; overflow: hidden; border-radius: 4px; background: var(--well); }
 .mp-prog > i { display: block; height: 100%; border-radius: 4px; background: var(--accent); }
+
+/* ---------- «Сохранить картинку»: size, the preview (the very picture that is saved), folder ---------- */
+.rp.mp-pic { width: 680px; }
+.mp-pic-bar { display: flex; align-items: center; gap: var(--s3); margin-top: 16px; }
+.mp-pic-px { font-size: 12px; color: var(--muted); }
+.mp-pic-view {
+  display: flex; align-items: center; justify-content: center; height: clamp(180px, calc(100vh - 380px), 360px);
+  margin-top: 12px; overflow: hidden; border-radius: var(--radius-ctl); background: var(--well);
+}
+.mp-pic-view img { display: block; max-width: 100%; max-height: 100%; }
+.mp-pic .rp-body .mp-pic-view p { margin: 0; padding: 0 var(--s4); text-align: center; } /* no places: the dialog's text, centred */
+.mp-pic-saved { margin-top: 16px; }
 
 /* ---------- narrow card: the side column narrows, then goes under the map (after the rules above: same specificity) ---------- */
 @container mp (max-width: 1099px) {

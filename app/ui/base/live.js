@@ -28,11 +28,12 @@
   function emit() { subs.forEach(function (cb) { try { cb(WT); } catch (e) { console.error(e); } }); }
 
   function fetchOnce() {
-    var req = request();
+    var req = request(), asked = Date.now();
     pendingGen = gen;
     pending = API.call('snapshot', { req: req }).then(function (snap) {
       WT.apply(snap);
       window.Live.shown = req;
+      window.Live.askedAt = asked;
       window.Live.failing = false;
       last = Date.now();
       pending = null;
@@ -89,6 +90,8 @@
     state: state,
     // The request that the data in WT answers (state may already be ahead of it).
     shown: null,
+    // When that request was sent (ms): a round reported before it is in the data (the route map's packet).
+    askedAt: 0,
     // Merge a change into the state ({window}, {endMs}, {range: [fromMs, toMs) | null}, {trace}) and refresh.
     set: function (patch) { if ('window' in patch) windowTouched = true; Object.assign(state, patch); gen++; return refresh(); },
     refresh: refresh,
