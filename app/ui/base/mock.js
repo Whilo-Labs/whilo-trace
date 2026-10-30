@@ -225,7 +225,7 @@
     broken: FLAGS.indexOf('geo-broken') >= 0,
   };
   var GEO = { month: GEO0.month, source: GEO0.month ? 'bundled' : null, broken: GEO0.broken, download: null, asked: false, timer: null };
-  var GEO_CITY = 131457024, GEO_ASN = 5000000; // compressed sizes of the two files the mock's server has
+  var GEO_CITY = 60200000, GEO_ASN = 5200000; // compressed sizes of the two files the mock's server has (as DB-IP's .mmdb.gz)
   // As the core: a set that does not open is unreadable and keeps its month and source; no set at all is missing.
   function geoState() {
     var d = GEO.download ? copy(GEO.download) : null;
@@ -427,7 +427,7 @@
     open_folder: function () { return null; },
     // Places database, in the core's order (docs/ui-contract.md, Places database) without the network: the mock's server
     // has the month of its clock out, and an offer is made once per page load (the core: the day of the last offer and
-    // of the last answered check are kept, so at most one answered request goes out a day).
+    // of the last request, answered or not, are kept, so at most one request goes out a day).
     geo_check: function () {
       if (settings.geoCheck === false) return { offer: null, reason: 'disabled' };
       if (GEO.asked) return { offer: null, reason: 'asked' };

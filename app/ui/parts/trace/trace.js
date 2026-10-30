@@ -837,7 +837,9 @@
       if (m.kind === 'none' || m.kind === 'missing' || m.kind === 'wait' || m.kind === 'down') return header(m, st) + '<div class="tr-main">' + emptyCard(m, note) + '</div>';
       if (m.kind === 'loading') return header(m, st) + '<div class="tr-main"></div>';
       m.h = hopOf(m, m.selected) || m.dest || m.hops[m.hops.length - 1];
-      return header(m, st) + '<div class="tr-main">' + conclusions(m, note) + hopCard(m, st) + timeline(m.h, m) + '</div>';
+      // In full screen the rest of the screen lies under the card: inert, so Tab and a screen reader stay on the card.
+      var off = st.view === 'map' && st.full ? function (s) { return s.replace(/^<(\w+)/, '<$1 inert'); } : function (s) { return s; };
+      return off(header(m, st)) + '<div class="tr-main">' + off(conclusions(m, note)) + hopCard(m, st) + off(timeline(m.h, m)) + '</div>';
     }
     function render(focusRow) {
       var t = st.id ? byId(st.id) : null;
@@ -849,6 +851,9 @@
         if (!dropTimer) dropTimer = setTimeout(function () { dropTimer = null; emit('onRange', null); }, 0);
       }
       if (m.kind === 'trace' && st.selected == null) st.selected = m.selected;
+      // Full screen is the map card's: when the card goes (no rounds left in the window, say), the window comes back.
+      var unfull = st.full && m.kind !== 'trace';
+      if (unfull) st.full = false;
       cur = m;
       morph(el, '<div class="screen">' + screenHtml(m) + '</div>');
       if (focusRow) {
@@ -862,6 +867,7 @@
       }
       if (drag) dragPaint(); else if (hov != null && m.kind === 'trace') hoverAt(hov); else hoverOff();
       tipRefresh();
+      if (unfull) emit('onFull', false);
       emit('onRender');
     }
     function setRange(r) { st.range = r; render(); emit('onRange', r); }

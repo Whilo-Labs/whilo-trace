@@ -107,7 +107,9 @@
   // «Дом здесь» / «Сбросить дом» on the map: the home point is a setting ({lat, lon} rounded to 0.1 degree, or null).
   function setHome(h) { act('set_settings', { settings: { home: h } }).catch(noop); }
   // «Во весь экран»: the part pins the card over the window; in the app the window goes full screen too where allowed.
+  // The card is always dark there, and so are the dialogs opened over it.
   function fullScreen(on) {
+    if (on) modal.setAttribute('data-theme', 'dark'); else modal.removeAttribute('data-theme');
     try {
       var w = window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow();
       if (w && w.setFullscreen) w.setFullscreen(!!on).catch(noop);
@@ -116,14 +118,25 @@
   // Leaving the page in full screen (a reload, a key that goes back): the window does not stay full screen without
   // the card that can end it.
   window.addEventListener('pagehide', function () { if (view && view.st.full) fullScreen(false); });
-  // A newer places database: asked once per page load when the map is first shown (the core sends at most one answered
-  // request a day and says why it did not ask); only an offer opens the dialog.
+  // A newer places database: asked once per page load when the map is first shown (the core sends at most one request
+  // a day, answered or not, and says why it did not ask); only an offer opens the dialog.
   function checkGeo() {
     if (geoAsked || !window.MAPD || (WT.settings && WT.settings.geoCheck === false)) return;
     geoAsked = true;
     API.call('geo_check').then(function (res) {
-      if (res && res.reason === 'offer' && res.offer) MAPD.open(modal, { offer: res.offer, missing: !!(WT.geo && (WT.geo.state === 'missing' || WT.geo.state === 'unreadable')) });
+      if (res && res.reason === 'offer' && res.offer) offerGeo({ offer: res.offer, missing: !!(WT.geo && (WT.geo.state === 'missing' || WT.geo.state === 'unreadable')) });
     }, function (err) { console.error('geo_check failed', err); });
+  }
+  // The core counts an offer as made for the day once it answers, so one that comes while another dialog is open
+  // (the report, the picture) waits until that dialog closes.
+  function offerGeo(o) {
+    if (MAPD.open(modal, o) || !window.MutationObserver) return;
+    var mo = new MutationObserver(function () {
+      if (!modal.hidden || modal._rp) return;
+      mo.disconnect();
+      offerGeo(o);
+    });
+    mo.observe(modal, { attributes: true, attributeFilter: ['hidden'] });
   }
 
   function start() {

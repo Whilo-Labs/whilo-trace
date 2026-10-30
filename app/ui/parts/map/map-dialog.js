@@ -16,16 +16,19 @@
     ['июль', 'July'], ['август', 'August'], ['сентябрь', 'September'], ['октябрь', 'October'], ['ноябрь', 'November'], ['декабрь', 'December']];
   function monthText(s) { var x = /^(\d{4})-(\d{2})$/.exec(s || ''), k = x ? +x[2] - 1 : -1; return MONTHS[k] ? L(MONTHS[k][0], MONTHS[k][1]) + ' ' + x[1] : String(s || ''); }
   function mb(bytes) { return Math.max(1, Math.round((bytes || 0) / 1e6)); }
-  // Why a download did not work, by the core's error code (docs/ui-contract.md).
-  function errText(code) {
+  // Why a download did not work, by the core's error code (docs/ui-contract.md). none: there was no usable database
+  // before (the dialog that offers to download one), so no old one stays: the map has no places yet.
+  function errText(code, none) {
     var c = String(code == null ? '' : code.message || code), k = c.split(':')[0].trim();
+    var left = none ? ['Карта пока без мест.', 'The map stays without places.'] : ['База осталась прежней.', 'The old database stays.'];
     var T = {
       geo_busy: ['База мест уже скачивается.', 'The places database is already downloading.'],
       geo_unavailable: ['В режиме имитации база мест не скачивается.', 'The places database is not downloaded in simulation mode.'],
-      geo_invalid: ['Скачанный файл не похож на базу мест, она осталась прежней.', 'The downloaded file is not a places database; the old one stays.'],
+      geo_invalid: none ? ['Скачанный файл не похож на базу мест. ' + left[0], 'The downloaded file is not a places database. ' + left[1]]
+        : ['Скачанный файл не похож на базу мест, она осталась прежней.', 'The downloaded file is not a places database; the old one stays.'],
       geo_cancelled: ['Загрузка отменена.', 'The download was cancelled.'],
-      net: ['Нет связи с db-ip.com. База осталась прежней.', 'Could not reach db-ip.com. The old database stays.'],
-      http: ['Сервер db-ip.com ответил ошибкой' + (c.indexOf(':') > 0 ? ' ' + c.split(':')[1].trim() : '') + '. База осталась прежней.', 'The db-ip.com server answered with an error' + (c.indexOf(':') > 0 ? ' ' + c.split(':')[1].trim() : '') + '. The old database stays.'],
+      net: ['Нет связи с db-ip.com. ' + left[0], 'Could not reach db-ip.com. ' + left[1]],
+      http: ['Сервер db-ip.com ответил ошибкой' + (c.indexOf(':') > 0 ? ' ' + c.split(':')[1].trim() : '') + '. ' + left[0], 'The db-ip.com server answered with an error' + (c.indexOf(':') > 0 ? ' ' + c.split(':')[1].trim() : '') + '. ' + left[1]],
       io: ['Не удалось записать файл базы.', 'Could not write the database file.'],
       core_unavailable: ['Ядро программы не отвечает.', 'The app core does not answer.'],
     }[k];
@@ -113,7 +116,7 @@
         s.step = 'done'; paint(); timer = setTimeout(close, 2000);
         if (window.Live && window.Live.refresh) window.Live.refresh().catch(function () { /* Live logs it */ }); // the new month at once
       }
-      else if (d.state === 'failed') { s.step = 'fail'; s.err = errText(d.error); paint(); }
+      else if (d.state === 'failed') { s.step = 'fail'; s.err = errText(d.error, missing); paint(); }
       else if (d.state === 'cancelled') close();
     }
     function go() {
@@ -122,7 +125,7 @@
       window.API.call('geo_download', { month: offer.month }).catch(function (e) {
         if (closed) return;
         console.error('geo_download failed', e);
-        s.step = 'fail'; s.err = errText(e);
+        s.step = 'fail'; s.err = errText(e, missing);
         paint();
       });
     }

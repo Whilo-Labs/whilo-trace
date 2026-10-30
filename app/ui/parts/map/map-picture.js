@@ -23,11 +23,14 @@
   var SIZES = [['wide', '1200×675'], ['square', '1080×1080']];
   function two(x) { return (x < 10 ? '0' : '') + x; }
   // whilo-trace-map-8.8.8.8-20261027-160000: the target and the end of the data's window, local time (the core
-  // cleans the name again and adds -2, -3 when the file is there).
+  // cleans the name again and adds -2, -3 when the file is there). A destination of your network typed as an address
+  // is hidden on the picture, so it stays out of the name too (route).
   function fileName() {
     var d = new Date(WT.toMs || WT.nowMs || Date.now()), tr = WT.trace;
     var row = tr ? (WT.targets || []).filter(function (x) { return x.id === tr.target; })[0] : null;
-    var host = row ? String(row.host).replace(/[^A-Za-z0-9.-]/g, '_') : 'route';
+    var dh = tr ? (tr.hops || []).filter(function (h) { return h.dest; })[0] : null;
+    var gone = !!(row && dh && dh.geo && dh.geo.level === 'own' && /^[0-9.]+$|:/.test(String(row.host)));
+    var host = row && !gone ? String(row.host).replace(/[^A-Za-z0-9.-]/g, '_') : 'route';
     return 'whilo-trace-map-' + host + '-' + d.getFullYear() + two(d.getMonth() + 1) + two(d.getDate()) + '-' + two(d.getHours()) + two(d.getMinutes()) + two(d.getSeconds());
   }
   function errText(e) {

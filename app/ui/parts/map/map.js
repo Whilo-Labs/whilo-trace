@@ -1438,17 +1438,22 @@
   // For publication: own hops (your network, the provider's CGNAT) and the first public hops until the AS number
   // changes (a hop without one does not change it; without AS data: the first two) lose their address, name and
   // place; they and the home go to the home country's label point (trace.home.cc; a home set by hand has none: the
-  // country of those provider hops; without one, the first place left), so the home callout says only «ваша сеть».
+  // country of those provider hops; without one, the country of the first place left), so the home callout says only
+  // «ваша сеть». A special-range address on the way there (not looked up, no place: a DS-Lite AFTR, say) is hidden
+  // with them and does not count as one of the first two.
   // The run of public hops ends at the destination: the target is in the picture's header anyway, and a short route
-  // keeps something to show; a destination in the provider's AS (its DNS, say) keeps its address but only its
-  // country. Callouts leave out the distances from home too (two of them would point at it).
+  // keeps something to show; a destination in the provider's AS (its DNS, say), or one that is the first public hop
+  // itself (a provider whose core has private addresses), keeps its address but only its country, and the header
+  // drops its name (a reverse name like dns1.bak.example.net gives the city away). A destination of your network
+  // is hidden in the header too. Callouts leave out the distances from home too (two of them would point at it).
   function masked(inp) {
-    var hops = inp.m.hops || [], hide = {}, first = null, k = 0, CP = window.WT_COUNTRY_POINTS || {};
+    var hops = inp.m.hops || [], hide = {}, first = null, k = 0, atDest = false, CP = window.WT_COUNTRY_POINTS || {};
     hops.forEach(function (x) { if (x.geo && x.geo.level === 'own') hide[x.ttl] = true; });
     for (var i = 0; i < hops.length; i++) {
       var h = hops[i];
       if (!h.addr || hide[h.ttl]) continue;
-      if (h.dest) break;
+      if (h.dest) { atDest = true; break; }
+      if (h.geo && h.geo.special) { hide[h.ttl] = true; continue; }
       var asn = h.geo && h.geo.asn != null ? h.geo.asn : null;
       if (first == null ? k >= 2 : asn != null && asn !== first) break;
       if (first == null) first = asn;
@@ -1456,22 +1461,32 @@
     }
     var own = { level: 'own', special: null, city: null, region: null, cc: null, country: null, lat: null, lon: null, asn: null, asOrg: null,
       distKm: null, fiberMs: null, vacuumMs: null, rttMs: null, extraMs: null, verdict: null };
-    var dest = hops.filter(function (x) { return x.dest && !hide[x.ttl] && x.addr && x.geo && first != null && x.geo.asn === first; })[0] || null;
+    var dest = hops.filter(function (x) {
+      return x.dest && !hide[x.ttl] && x.addr && x.geo && (first != null ? x.geo.asn === first : atDest && k === 0);
+    })[0] || null;
     var dpt = dest && dest.geo.cc ? CP[dest.geo.cc] || null : null;
     var out = hops.map(function (x) {
       if (hide[x.ttl]) return Object.assign({}, x, { addr: L('скрыт', 'hidden'), name: null, masked: true, geo: own });
       if (x !== dest) return x;
       return Object.assign({}, x, { name: null, geo: Object.assign({}, own, dpt ? { level: 'country', cc: dest.geo.cc, country: dest.geo.country || null, lat: dpt[1], lon: dpt[0] } : { level: 'none' }) });
     });
+    // The header: no second label (reverse name or address) for such a destination; a hidden one typed as an address
+    // is not written either.
+    var tg = inp.m.target, dh = hops.filter(function (x) { return x.dest; })[0] || null, gone = !!(dh && hide[dh.ttl]);
+    if (tg && (dest || gone)) {
+      tg = Object.assign({}, tg, { name: null });
+      if (gone && /^[0-9.]+$|:/.test(String(tg.host || ''))) tg.host = L('скрыт', 'hidden');
+    }
     var home = inp.home, cc = home && home.cc;
     if (!cc) hops.forEach(function (x) { if (!cc && hide[x.ttl] && x.geo && x.geo.cc) cc = x.geo.cc; });
     var pt = cc ? CP[cc] || null : null;
     if (!pt) {
+      // never a city: the label point of the first place's country (its own point only when the country has none)
       var f = G.kinds(out.filter(function (x) { return !x.masked; }), null, window.WT_COUNTRY_POINTS).filter(function (n) { return n.kind === 'city' || n.kind === 'country'; })[0];
-      pt = f ? f.ll : null;
+      pt = f ? (f.hop.geo.cc && CP[f.hop.geo.cc]) || f.ll : null;
     }
     return {
-      m: Object.assign({}, inp.m, { hops: out }), geo: inp.geo,
+      m: Object.assign({}, inp.m, { hops: out, target: tg }), geo: inp.geo,
       home: home && pt ? { lat: pt[1], lon: pt[0], city: null, cc: cc || null, country: null, source: 'auto', ttl: null } : null,
     };
   }
@@ -1622,7 +1637,14 @@
   function init(o) {
     opt = o || {};
     // Theme: no event fires when it changes (base/theme.js), so the map watches the attribute and the system theme.
-    if (window.MutationObserver) new MutationObserver(schedule).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    // base/theme.js writes the attribute again with every snapshot: only a new value redraws.
+    var theme = document.documentElement.getAttribute('data-theme');
+    if (window.MutationObserver) {
+      new MutationObserver(function () {
+        var t = document.documentElement.getAttribute('data-theme');
+        if (t !== theme) { theme = t; schedule(); }
+      }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    }
     onMq(DARK, schedule);
     // A hidden window (another tab in front; minimised, where the system says so): the packet waits until it is back.
     document.addEventListener('visibilitychange', function () { if (document.hidden) stopLoop(); else schedule(); });
