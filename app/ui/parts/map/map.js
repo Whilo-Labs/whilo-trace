@@ -1725,8 +1725,9 @@
   // Any other hop, or the destination, whose place is in the home city is shown at the country level as well (its
   // country's label point, no city, no name; a destination also loses its name in the header): a later operator's
   // router in your city, or a destination after provider hops without an AS number, would name the city. In the home
-  // city: the automatic home's city and country, or, for a home set by hand (no city) or a place without a city name,
-  // within HOME_KM of the real home point. Such places say no «известна только страна»: the database knows the city.
+  // city: the automatic home's city and country (cityOf: the name before a district in brackets), or, for a home set by
+  // hand (no city) or a place without a city name, within HOME_KM of the real home point. Such places say no
+  // «известна только страна»: the database knows the city.
   function masked(inp) {
     var hops = inp.m.hops || [], hide = {}, first = null, k = 0, atDest = false, CP = window.WT_COUNTRY_POINTS || {};
     hops.forEach(function (x) { if (x.geo && x.geo.level === 'own') hide[x.ttl] = true; });
@@ -1748,7 +1749,7 @@
     var hm = inp.home, hll = hm && hm.lat != null && hm.lon != null && isFinite(hm.lat) && isFinite(hm.lon) ? [hm.lon, hm.lat] : null;
     function inHome(g) {
       if (!hll || !g || (g.level !== 'city' && g.level !== 'country')) return false;
-      if (hm.city && g.city) return g.city === hm.city && g.cc === hm.cc;
+      if (hm.city && g.city) return cityOf(g.city) === cityOf(hm.city) && g.cc === hm.cc;
       return g.lat != null && g.lon != null && isFinite(g.lat) && isFinite(g.lon) && homeKm(hll, [g.lon, g.lat]) <= HOME_KM;
     }
     var out = hops.map(function (x) {
@@ -1782,6 +1783,9 @@
   // The home city's reach when no city name can be compared (km), and the great-circle distance between two [lon, lat]
   // points in km (plain Math, as the core's physics).
   var HOME_KM = 50;
+  // A city's name before the district DB-IP may add in brackets: «Baku», «Baku (Yasamal)» and «Baku (Nəsimi)» are one
+  // city (in the 2026-11 database 12 % of the places with a city have a district, and Baku comes under 14 names).
+  function cityOf(s) { return String(s).split(' (')[0]; }
   function homeKm(a, b) {
     var r = Math.PI / 180, dp = (b[1] - a[1]) * r, dl = (b[0] - a[0]) * r;
     var h = Math.pow(Math.sin(dp / 2), 2) + Math.cos(a[1] * r) * Math.cos(b[1] * r) * Math.pow(Math.sin(dl / 2), 2);
