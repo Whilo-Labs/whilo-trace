@@ -108,7 +108,7 @@
   function partFont(c, p) { var f = PF[p.f || 'sys']; font(c, f[0], f[1], f[2]); }
   function partW(c, p) { partFont(c, p); return c.measureText(p.t).width; }
   function hitB(a, b) { return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h; }
-  var TOK = ['well', 'layer', 'grid', 'faint', 'muted', 'title', 'text', 'line', 'loss', 'loss-text', 'partial', 'partial-text', 'hatch', 'packet', 'mp-on-line'];
+  var TOK = ['well', 'layer', 'grid', 'faint', 'muted', 'title', 'text', 'line', 'loss', 'loss-text', 'partial', 'partial-text', 'hatch', 'packet', 'mp-on-line', 'mp-land'];
   function readColors() {
     var cs = getComputedStyle(stage), o = {}, key = '';
     TOK.forEach(function (k) { o[k] = cs.getPropertyValue('--' + k).trim(); key += o[k] + ';'; });
@@ -572,7 +572,7 @@
     var c = cacheCx, p = sc.proj, path = d3.geoPath(p, c), b = sc.bounds, st = sc.step, grat = d3.geoGraticule().step([st, st]);
     if (b && b[3] > -80 && b[1] < 80) grat.extent([[b[0], Math.max(-80, b[1])], [b[2], Math.min(80, b[3])]]);
     c.clearRect(0, 0, W, H);
-    c.fillStyle = C.layer; c.beginPath(); path(land()); c.fill();
+    c.fillStyle = C['mp-land']; c.beginPath(); path(land()); c.fill();
     c.strokeStyle = C.grid; c.lineWidth = 1; c.beginPath(); path(grat()); c.stroke();
     c.fillStyle = C.muted;
     sc.ticks.top.forEach(function (t) { if (t.at > 2 && t.at < W - 2) c.fillRect(Math.round(t.at), 0, 1, 6); });

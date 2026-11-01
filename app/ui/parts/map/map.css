@@ -1,8 +1,8 @@
 /* Whilo Trace, part "route map" (parts/map) on the trace screen: the hop card's head (it belongs to the trace part but
    exists only with the map), the map stage, the side column, the «new places database» dialog and the «Сохранить
    картинку» dialog.
-   Layout and look of the approved mockup C «Телеметрия». Variables from base/tokens.css only; flat: fills, no borders,
-   shadows or gradients. Loaded before screens/app.css. */
+   Layout and look of the approved mockup C «Телеметрия». Variables from base/tokens.css only (the light theme's land
+   below is the one colour of its own); flat: fills, no borders, shadows or gradients. Loaded before screens/app.css. */
 
 /* Text on a --line fill and the lost cell of the ribbon: white in the light theme (--well on --line is 4.3:1 there,
    white 4.8:1; white on --loss-text 5.8:1), --well in the dark one (white on --line is 3.4:1 there). */
@@ -11,6 +11,19 @@
   :root:not([data-theme="light"]) { --mp-on-line: var(--well); --mp-lost: var(--loss); --mp-on-lost: var(--well); }
 }
 [data-theme="dark"] { --mp-on-line: var(--well); --mp-lost: var(--loss); --mp-on-lost: var(--well); }
+
+/* Land of the map; its sea is the stage's --well (map.js reads the land for the stage, the picture and the report
+   map). Light theme: a grey a step darker than the well, so the land is darker than the sea (the card's white read
+   the other way round); over it --line is 3.6:1, --muted 4.3:1, the grid crosses 2.5:1 (2.4:1 over the dark land), and
+   the grid lines vanish, as they do over the dark land. Dark theme: the card's --layer, as in the approved mockup.
+   Plates and knockouts on the map stay --well, the colour of the sea. The right-click menu is the app's --float,
+   which in the light theme is the land's grey: there it swaps its two fills, white with the row under the pointer
+   grey. */
+:root, [data-theme="light"] { --mp-land: #DEDEDE; --mp-menu: var(--layer); --mp-menu-hover: var(--control-hover); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --mp-land: var(--layer); --mp-menu: var(--float); --mp-menu-hover: var(--float-hover); }
+}
+[data-theme="dark"] { --mp-land: var(--layer); --mp-menu: var(--float); --mp-menu-hover: var(--float-hover); }
 
 /* ---------- hop card: head with «Таблица / Карта» and, for the map, animation, picture, full screen ---------- */
 .tr-hc-head { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2) var(--s3); padding: var(--s3) var(--s3) var(--s2); }
@@ -51,13 +64,13 @@
 .mp-empty p { max-width: 460px; margin: var(--s2) 0 0; font-size: 13px; line-height: 1.45; color: var(--text); }
 
 /* right-click menu on the map: «Дом здесь» / «Сбросить дом» */
-.mp-menu { position: absolute; z-index: 4; display: grid; gap: 2px; min-width: 220px; padding: 4px; border-radius: var(--radius-ctl); background: var(--float); }
+.mp-menu { position: absolute; z-index: 4; display: grid; gap: 2px; min-width: 220px; padding: 4px; border-radius: var(--radius-ctl); background: var(--mp-menu); }
 .mp-menu[hidden] { display: none; }
 .mp-menu button {
   display: flex; align-items: center; justify-content: space-between; gap: var(--s3); height: 32px; padding: 0 10px; border: 0; border-radius: 6px;
   background: transparent; color: var(--title); font: inherit; font-size: 13px; text-align: left; white-space: nowrap; cursor: pointer;
 }
-.mp-menu button:hover, .mp-menu button:focus-visible { background: var(--float-hover); outline: none; }
+.mp-menu button:hover, .mp-menu button:focus-visible { background: var(--mp-menu-hover); outline: none; }
 .mp-menu .aside { font-size: 12px; color: var(--text); font-family: "Cascadia Mono", ui-monospace, Consolas, Menlo, "DejaVu Sans Mono", monospace; }
 
 /* zoom, bottom right (map.js zoomBox), in the band the map keeps for the legend; the callouts keep clear of it; not
