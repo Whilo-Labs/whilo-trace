@@ -199,7 +199,7 @@ resumes it, then at its saved interval.
   "geo": { "level": "own", "special": "private", "city": null, "region": null, "cc": null,
            "country": null, "lat": null, "lon": null, "asn": null, "asOrg": null, "distKm": null,
            "fiberMs": null, "vacuumMs": null, "rttMs": null, "extraMs": null, "verdict": null } },
-  { "ttl": 9, "addr": "80.81.192.10", ...,
+  { "ttl": 9, "addr": "192.0.2.77", ...,
     "geo": { "level": "city", "special": null, "city": "Frankfurt am Main", "region": "Hesse",
              "cc": "DE", "country": "Германия", "lat": 50.11, "lon": 8.68, "asn": 64504,
              "asOrg": "Transit DE", "distKm": 3350.2, "fiberMs": 33.53, "vacuumMs": 22.35,

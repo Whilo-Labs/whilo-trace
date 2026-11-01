@@ -28,7 +28,7 @@ The app files now include the places database of the route map (DB-IP Lite, abou
 ## Before the first start
 
 - **Windows.** The files are not signed yet, so SmartScreen may say "Windows protected your PC". Choose "More info", then "Run anyway".
-- **macOS.** The app is not notarized yet. Open it with right-click, Open, the first time.
+- **macOS.** The app is not notarized yet. Open it once, then choose **Open Anyway** in System Settings, Privacy & Security. On macOS 14 and earlier, right-click the app and choose Open instead.
 - **Linux.** Probes use unprivileged ICMP sockets. If the app reports that probes are unavailable, allow them for your group, for example `sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"`.
 
 ## Tested

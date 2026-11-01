@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 ![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-555)
 
-> See where packets get lost on the way to the hosts you care about: per-hop loss and latency for several hosts at once, a timeline from 5 minutes to 24 hours, local history and a report for your ISP.
+> See where packets get lost on the way to the hosts you care about: per-hop loss and latency for several hosts at once, a timeline from 5 minutes to 24 hours, the route on a world map, local history and a report for your ISP.
 
 [Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [How it works](#how-it-works) · [Route map](#route-map) · [Build](#build-from-source) · [FAQ](#faq)
 
@@ -43,7 +43,13 @@
   <img alt="Target trace: findings, the hop table and the timeline of the hop where the loss starts" src="docs/screenshots/trace-light.png">
 </picture>
 
-<sub>The screenshots show demo data. Addresses other than the public resolvers and the home router are from documentation and private ranges.</sub>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/map-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/map-light.png">
+  <img alt="Route map: the path to 8.8.8.8 on a world map, the hop where the loss starts and the speed-of-light check" src="docs/screenshots/map-dark.png">
+</picture>
+
+<sub>The screenshots show demo data: addresses other than the public resolvers are from documentation, shared (CGNAT) and private ranges, and the router names and their places are made up.</sub>
 
 ## Download
 
@@ -58,10 +64,10 @@ Get the latest version from **[Releases](https://github.com/Whilo-Labs/whilo-tra
 | macOS (Apple silicon and Intel) | `whilo-trace-*-macos-universal.dmg` | Drag the app to Applications |
 | Command line, Linux and macOS | `whilo-trace-cli-*.tar.gz` | On Windows it is in the portable zip |
 
-The app downloads include the places database of the [route map](#route-map) (DB-IP Lite, about 130 MB unpacked). It adds roughly 60 to 70 MB to each of them: an estimate, the sizes have not been measured yet. The command line downloads do not include it.
+The app downloads include the places database of the [route map](#route-map) (DB-IP Lite, about 130 MB unpacked), so they are larger than before: about 47 MB for the Windows installer, 74 to 77 MB for the portable zip, the deb and the dmg, and 143 MB for the AppImage. The command line downloads do not include it.
 
 > [!NOTE]
-> The files are not signed yet. On **Windows**, SmartScreen may say "Windows protected your PC": choose "More info", then "Run anyway". On **macOS**, open the app with right-click, Open, the first time. On **Linux**, probes need unprivileged ICMP sockets: if the app says probes are unavailable, run `sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"`.
+> The files are not signed yet. On **Windows**, SmartScreen may say "Windows protected your PC": choose "More info", then "Run anyway". On **macOS**, the app is not notarized yet: open it once, then choose **Open Anyway** in System Settings, Privacy & Security (on macOS 14 and earlier, right-click the app and choose Open). On **Linux**, probes need unprivileged ICMP sockets: if the app says probes are unavailable, run `sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"`.
 
 ## Platforms
 
@@ -71,6 +77,8 @@ The app downloads include the places database of the [route map](#route-map) (DB
 | Windows 10 | Expected to work (the same system ICMP API), not tested yet |
 | Linux | Built automatically, and the core passes the automated tests; not tried on a real machine yet |
 | macOS | Built automatically, and the core passes the automated tests; not tried on a real machine yet |
+
+The route map is new in 0.2.0: so far it has been checked only with made-up places, not on real traces.
 
 Found a problem on Linux or macOS? Please [open an issue](https://github.com/Whilo-Labs/whilo-trace/issues/new/choose): reports from those systems help a lot.
 
