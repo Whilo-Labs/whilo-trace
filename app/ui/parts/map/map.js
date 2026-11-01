@@ -12,13 +12,19 @@
 // changed while the page is open).
 // The packet follows the target's real rounds (MAP.round, the "round" event): one packet per round with the outcome
 // the next snapshot shows, at most 30 frames a second, and no frame loop at all while nothing moves.
-// MAP.png draws the picture for publication (dark, your network hidden) and the report's map (light, as it is);
-// parts/map/map-picture.js puts it in the «Сохранить картинку» dialog (MAP.picture).
+// Zoom and pan: «+», «−» and «Вписать маршрут» on the map (on a long route the switch «Основной участок / Весь
+// маршрут»), Ctrl + wheel around the pointer (a plain wheel scrolls the page and shows how to zoom; in full screen it
+// zooms), a drag of 4 px or more pans (less is a click), a double click zooms in 2×, and with the focus on the map
+// «+», «−» and «0». Limits (MAPG): out to the whole route, in to 6× the default view while the map stays 300 km wide,
+// and the route's box stays partly in view. The view stays while live data ticks and goes back to the default one
+// when the route's places change. A long route opens on its main part, its far part a pointer at the edge (MAPG.place).
+// MAP.png draws the picture for publication (dark, your network hidden) and the report's map (light, as it is),
+// always in the default view; parts/map/map-picture.js puts it in the «Сохранить картинку» dialog (MAP.picture).
 // MAP: init(o), attach(host | null), update(data), round(targetId), setPaused(on), paused(), renderAt(t, lostAt),
-// png(data, o), hasPlaces(data).
+// png(data, o), pngSize(size), hasPlaces(data).
 // Test hooks: window.MAP_READY = true after the first complete draw; MAP.renderAt(t) draws the packet t seconds into
 // a round of the current data (lostAt: the ttl where that round is lost) and freezes that frame and the live
-// animation, MAP.renderAt(null) the static route.
+// animation, MAP.renderAt(null) the static route; MAP.view() says how the map is zoomed.
 (function () {
   'use strict';
   var EN = document.documentElement.dataset.lang === 'en';
@@ -87,9 +93,11 @@
 
   // ---------- state ----------
   var opt = {}, stage = null, host = null, mapEl = null, sideEl = null, panelEl = null, ribEl = null, emptyEl = null, menuEl = null;
+  var zoomEl = null, hintEl = null;
   var cv = [], cx = [], cache = null, cacheCx = null, landF = null;
   var W = 0, H = 0, DPR = 1, C = {}, colorKey = '';
-  var input = null, sc = null, fitPrev = null, choicePrev = {}, hits = [];
+  // fitPrev: the route's views of the last layout (MAPG.views); ctlB: the zoom's box on the map (null in the picture)
+  var input = null, sc = null, fitPrev = null, choicePrev = {}, hits = [], ctlB = null;
   var keys = { size: '', cache: '', l0: '', l2: '', l1: '', panel: '', sel: null, empty: null };
   var paused = !!(CALM && CALM.matches), calm = paused, frozen = null, hold = false, demoLost, cursor = { ttl: null, lost: false };
   var ro = null, dprMq = null, raf = 0, menuLL = null, ready = false, lastD = null, XP = false;
@@ -191,11 +199,14 @@
     stage.className = 'mp-stage';
     stage.innerHTML = '<div class="mp-map" tabindex="0" role="group" aria-label="' + esc(L('Карта маршрута', 'Route map')) + '">' +
       '<canvas aria-hidden="true"></canvas><canvas aria-hidden="true"></canvas><canvas aria-hidden="true"></canvas>' +
+      '<div class="mp-zoom" role="toolbar" aria-label="' + esc(L('Масштаб карты', 'Map zoom')) + '" hidden></div>' +
+      '<div class="mp-hint" aria-hidden="true" hidden>' + esc(L('Ctrl + колесо: масштаб', 'Ctrl + wheel: zoom')) + '</div>' +
       '<div class="mp-empty" hidden></div><div class="mp-menu" role="menu" aria-label="' + esc(L('Дом на карте', 'Home on the map')) + '" hidden></div></div>' +
       '<aside class="mp-side"><section class="mp-panel"></section><section class="mp-rib"></section></aside>';
     mapEl = stage.firstChild; sideEl = stage.lastChild;
     panelEl = sideEl.firstChild; ribEl = sideEl.lastChild;
     emptyEl = mapEl.querySelector('.mp-empty'); menuEl = mapEl.querySelector('.mp-menu');
+    zoomEl = mapEl.querySelector('.mp-zoom'); hintEl = mapEl.querySelector('.mp-hint');
     cv = [].slice.call(mapEl.querySelectorAll('canvas'));
     // L0 under L2 (callouts), the packet's L1 on top: a callout that has to sit on the route does not hide it
     cv.forEach(function (c, i) { c.style.zIndex = String(i === 1 ? 2 : i === 2 ? 1 : 0); });
@@ -205,6 +216,13 @@
     mapEl.addEventListener('mouseleave', function () { mapEl.style.cursor = ''; });
     mapEl.addEventListener('contextmenu', onContext);
     mapEl.addEventListener('keydown', onMapKey);
+    mapEl.addEventListener('wheel', onWheel, { passive: false });
+    mapEl.addEventListener('pointerdown', onDown);
+    mapEl.addEventListener('pointermove', onDrag);
+    mapEl.addEventListener('pointerup', onUp);
+    mapEl.addEventListener('pointercancel', onUp);
+    mapEl.addEventListener('dblclick', onDbl);
+    zoomEl.addEventListener('click', onZoomClick);
     menuEl.addEventListener('click', onMenuClick);
     menuEl.addEventListener('keydown', onMenuKey);
     ribEl.addEventListener('click', onRibClick);
@@ -235,6 +253,9 @@
   function observe(on) {
     if (on) {
       if (window.ResizeObserver && !ro) { ro = new ResizeObserver(schedule); ro.observe(mapEl); ro.observe(sideEl); }
+      // the window's height decides the stage's (fitStage): the stage itself does not resize with it (the same
+      // listener added again is not added twice)
+      window.addEventListener('resize', schedule);
       watchDpr(true);
       // The map scrolled out of view: the packet stops until it is back.
       if (window.IntersectionObserver && !an.io) {
@@ -248,6 +269,7 @@
       }
     } else {
       if (ro) { ro.disconnect(); ro = null; }
+      window.removeEventListener('resize', schedule);
       watchDpr(false);
       if (raf) { cancelAnimationFrame(raf); raf = 0; }
       if (an.io) { an.io.disconnect(); an.io = null; an.vis = true; }
@@ -264,6 +286,8 @@
     if (!d.nodes.some(function (n) { return n.ll; })) { d.empty = emptyWhy(d); return d; }
     d.fitKey = (m.target ? m.target.id : '') + '|' + (d.home ? d.home.lat + ',' + d.home.lon : '-');
     d.geoKey = d.fitKey + '|' + d.nodes.map(function (n) { return n.ttl + n.kind + (n.ll ? n.ll.join(',') : '') + (n.db ? '>' + n.db.join(',') : ''); }).join(';');
+    // the route's places: when they change, the user's zoom and pan give way to the default view
+    d.routeKey = d.fitKey + '|' + d.nodes.filter(function (n) { return n.ll; }).map(function (n) { return n.ttl + ':' + n.ll.join(','); }).join(';');
     d.labelKey = JSON.stringify([d.sel, m.probe, m.win, !!m.range, d.manual, d.home && d.home.city, d.geo && [d.geo.state, d.geo.month], hops.map(function (h) {
       var g = h.geo || {}, s = h.s;
       return [h.ttl, h.addr, h.status, h.origin, h.dest, s ? [nf(s.min || 0), fin(s.min), nf(s.noReplyPct || 0)] : 0, g.city, g.cc, g.country, g.verdict, g.distKm, g.vacuumMs, g.fiberMs, g.rttMs];
@@ -290,6 +314,7 @@
     if (!host || !input || !stage || !stage.isConnected) return;
     var m = input.m;
     if (!m || m.kind !== 'trace') return;
+    fitStage();
     var w = mapEl.clientWidth, h = mapEl.clientHeight, dpr = window.devicePixelRatio || 1;
     if (!w || !h) return;
     var ck = readColors(), sk = w + 'x' + h + '@' + dpr;
@@ -307,14 +332,24 @@
         keys.cache = 'empty'; keys.empty = d.empty;
         hits = [];
         closeMenu();
+        zoomEl.hidden = true; hintEl.hidden = true;
       }
       lastD = null; an.pk = an.next = null; an.pend = 0;
       stopLoop();
     } else {
       keys.empty = null;
       emptyEl.hidden = true;
-      var lk = d.geoKey + '|' + sk + '|' + furnKey(d);
+      // the user's view lasts while the route's places stay; another route opens on its default view
+      if (d.routeKey !== viewKey) { viewKey = d.routeKey; uv = null; selSeen = undefined; }
+      var lk = d.geoKey + '|' + sk + '|' + furnKey(d) + '|' + uvKey();
       if (!sc || sc.key !== lk) layout(d, sk, lk);
+      // a hop picked elsewhere (the ribbon, the table, keys) out of sight in the user's view: the map moves to show it
+      // (laid out again from fresh nodes: a layout keeps the points it gave the hops without a place)
+      if (d.sel !== selSeen) {
+        if (selSeen !== undefined && reveal(d)) { d = derive(input); lk = d.geoKey + '|' + sk + '|' + furnKey(d) + '|' + uvKey(); layout(d, sk, lk); }
+        selSeen = d.sel;
+      }
+      zoomState();
       var cKey = sc.fitId + '|' + sc.step + '|' + ck + '|' + sk;
       if (keys.cache !== cKey) { drawCache(); keys.cache = cKey; keys.l0 = ''; }
       var l0 = sc.key + '|' + ck + '|' + d.sel + '|' + keys.cache;
@@ -332,15 +367,42 @@
 
   // What the layout depends on besides the places and the size: the room of the readout and of the source line.
   function furnKey(d) { return hudBox(cx[2], d).w + '|' + (d.geo ? d.geo.state + d.geo.month : ''); }
-  // Projection and screen places. The bottom margin keeps the route clear of the legend; the edge pointer stops
-  // short of the readout, the legend and the scale.
+  // The stage ends at the window's bottom while the page is at its top (the card's 12 px padding under it): what is
+  // above it (the conclusions, how many lines they take) decides where it starts. map.css clamps the height and
+  // takes it for the stage, or for the map when the side column goes under it; full screen has its own.
+  var stageH = '';
+  function fitStage() {
+    if (!stage.style.setProperty || !(window.innerHeight > 0)) return;
+    var v = Math.round(window.innerHeight - stage.getBoundingClientRect().top - (window.pageYOffset || 0) - 12) + 'px';
+    if (v !== stageH) { stageH = v; stage.style.setProperty('--mp-h', v); }
+  }
+  // Projection and screen places. The margins keep the route clear of the readout (top) and of the legend and the
+  // zoom (bottom); the edge pointers stop short of the readout, the legend, the scale and the zoom. The views
+  // (MAPG.views) are made again only when the places, the size or the furniture's room change, not for a zoom or a
+  // pan.
   function layout(d, sk, key) {
-    var c = cx[2], lg = legendLayout(c, d.m), box = { w: W, h: H, top: 52, bottom: lg.h + 34 + 8 };
-    if (!fitPrev || fitPrev.key !== d.fitKey + '|' + sk) choicePrev = {};
-    fitPrev = G.fit(d.nodes, box, d.fitKey + '|' + sk, fitPrev);
-    var p = fitPrev.proj, gs = G.gridStep(p, W, H), hud = hudBox(c, d);
-    var s = G.place(d.nodes, p, W, H, [hud, lg.box, scaleLayout(c, d, hud, p, gs.step).box]);
-    s.proj = p; s.fitId = fitPrev.id; s.step = gs.step; s.cell = gs.cell; s.key = key;
+    var c = cx[2], vk = d.fitKey + '|' + sk, lg, box, V, z;
+    if (!fitPrev || fitPrev.key !== vk) choicePrev = {};
+    // The views; once more when the zoom's box is not the one the legend was laid out by (on a narrow map the legend
+    // stands above the zoom, and a long route's switch makes the zoom wider).
+    for (var k = 0; k < 2; k++) {
+      lg = legendLayout(c, d.m);
+      box = { w: W, h: H, top: 52, bottom: H - lg.box.y + 8 };
+      var src = d.geoKey + '|' + box.top + ',' + box.bottom;
+      V = fitPrev && fitPrev.key === vk && fitPrev.src === src ? fitPrev : G.views(d.nodes, box, vk, fitPrev);
+      V.src = src;
+      fitPrev = V;
+      z = zoomBox(c, !!V.long);
+      var same = z === ctlB || !!(z && ctlB && z.x === ctlB.x && z.y === ctlB.y);
+      ctlB = z;
+      if (same) break;
+    }
+    if (k > 1) lg = legendLayout(c, d.m); // (the zoom changed again: the legend as it will be drawn)
+    if (uv === 'all' && !V.long) uv = null;
+    var p = projNow(), gs = G.gridStep(p, W, H), hud = hudBox(c, d), furn = [hud, lg.box, scaleLayout(c, d, hud, p, gs.step).box].concat(ctlB ? [ctlB] : []);
+    var s = G.place(d.nodes, p, W, H, furn, V.long);
+    s.proj = p; s.fitId = projId(p); s.step = gs.step; s.cell = gs.cell; s.key = key; s.furn = furn; s.box = box;
+    s.bounds = G.viewBounds(p, W, H, gs.step);
     s.ticks = {
       top: G.crossings(p, 0.5, true, W, gs.step), bottom: G.crossings(p, H - 0.5, true, W, gs.step),
       left: G.crossings(p, 0.5, false, H, gs.step), right: G.crossings(p, W - 0.5, false, H, gs.step),
@@ -352,13 +414,166 @@
     sc = s;
   }
 
-  // Land, the grid of 10/5/2 degrees, ruler ticks on the four edges and a small cross at every grid point (the grid
-  // lines almost vanish over land; the crosses keep the grid readable).
+  // ---------- zoom and pan ----------
+  // The user's view: null (the default one: a long route's main part, else the whole route), 'all' (a long route as
+  // a whole, fitted) or {f, c} (the zoom as a share of the default view's scale, the point at the map's centre). It
+  // stays while the route's places stay (viewKey) and is put aside for the picture. press: a left button held on the
+  // map (on: it moved 4 px or more and pans; a move with the button up ends it); dragged: the click that ends a pan
+  // selects nothing.
+  var uv = null, viewKey = null, selSeen, press = null, dragged = false, hintT = 0;
+  function viewF() { return uv === 'all' ? fitPrev.fMin : uv ? uv.f : 1; }
+  function uvKey() { return uv === null ? 'd' : uv === 'all' ? 'a' : 'u' + uv.f.toFixed(5) + ':' + uv.c[0].toFixed(5) + ':' + uv.c[1].toFixed(5); }
+  function projId(p) { return p.rotate()[0].toFixed(3) + ':' + p.scale().toFixed(3) + ':' + p.translate().map(function (v) { return v.toFixed(2); }).join(','); }
+  // The projection of the view (the one on screen, or the one the next redraw shows): within the zoom limits of
+  // this size and within the pan limit.
+  function projNow() {
+    var V = fitPrev;
+    if (uv === 'all') return V.all.proj;
+    if (!uv) return V.def.proj;
+    uv.f = Math.max(V.fMin, Math.min(V.fMax, uv.f));
+    return G.limit(V, G.project(V, uv.f, uv.c, [W / 2, H / 2]), W, H);
+  }
+  function setView(v) {
+    uv = v === 'all' && !(fitPrev && fitPrev.long) ? null : v;
+    closeMenu(false);
+    schedule();
+  }
+  // Zoom by k around the map point p (px); at the outer limit the whole route, fitted.
+  function zoomAt(p, k) {
+    if (!sc || !fitPrev) return;
+    var v = G.zoomTo(fitPrev, projNow(), viewF(), p, k, W, H);
+    if (v) setView(v);
+  }
+  // The selected hop out of sight in the user's view (off the map, at its very edge, or under the readout, the
+  // legend, the scale or the zoom: its reticle's box meets them) comes into the part of the map the default view keeps
+  // for the route (inside its padding: clear of all of them, with room for a callout), as short a move as gets it
+  // there. A default view shows every hop (the far part of a long route is its pointer there). True when the view
+  // moved.
+  function reveal(d) {
+    if (!uv || uv === 'all' || !sc) return false;
+    var n = nodeOf(d.sel);
+    if (!n || !n.p) return false;
+    var p = n.p, r = { x: p[0] - 16, y: p[1] - 16, w: 32, h: 32 };
+    if (r.x >= 8 && r.y >= 8 && r.x + r.w <= W - 8 && r.y + r.h <= H - 8 && !sc.furn.some(function (b) { return hitB(r, b); })) return false;
+    var x0 = W * 0.18, x1 = W * 0.82, y0 = Math.max(sc.box.top, H * 0.25), y1 = H - Math.max(sc.box.bottom, H * 0.28);
+    if (y1 - y0 < 40) y0 = y1 = H / 2;
+    var dx = p[0] < x0 ? x0 - p[0] : p[0] > x1 ? x1 - p[0] : 0, dy = p[1] < y0 ? y0 - p[1] : p[1] > y1 ? y1 - p[1] : 0;
+    var v = dx || dy ? G.panBy(fitPrev, sc.proj, uv.f, dx, dy, W, H) : null;
+    if (v) uv = v;
+    return !!v;
+  }
+  var ZI = ' fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true" focusable="false"';
+  function zoomHtml(long) {
+    function b(act, ru, en, inner) {
+      return '<button type="button" class="btn btn-sm btn-icon" data-mp-zoom="' + act + '" aria-label="' + esc(L(ru, en)) + '" title="' + esc(L(ru, en)) + '">' + inner + '</button>';
+    }
+    var fit = long
+      ? '<div class="seg" role="group" aria-label="' + esc(L('Что показать', 'What to show')) + '">' +
+        '<button type="button" data-mp-zoom="main" aria-pressed="false">' + esc(L('Основной участок', 'Main part')) + '</button>' +
+        '<button type="button" data-mp-zoom="all" aria-pressed="false">' + esc(L('Весь маршрут', 'Whole route')) + '</button></div>'
+      : '<button type="button" class="btn btn-sm" data-mp-zoom="fit">' + esc(L('Вписать маршрут', 'Fit the route')) + '</button>';
+    return fit + b('out', 'Отдалить', 'Zoom out', '<svg class="ico" viewBox="0 0 16 16"' + ZI + '><path d="M3.5 8h9"/></svg>') +
+      b('in', 'Приблизить', 'Zoom in', '<svg class="ico" viewBox="0 0 16 16"' + ZI + '><path d="M8 3.5v9M3.5 8h9"/></svg>');
+  }
+  // The zoom's box on the map, bottom right (map.css .mp-zoom), in the band the fit keeps free for the legend, where
+  // the pointer of a long route to the west (Europe to the Americas) does not run into it; the callouts, the degree
+  // labels and the edge pointers keep clear of it. With the controls for a long route (the switch) or not («Вписать
+  // маршрут»). Measured on the page; estimated from the fonts where there is none (the offline checks). None in the
+  // picture.
+  var zoomSig = '', zoomWH = null;
+  function zoomBox(c, long) {
+    if (XP) return null;
+    var w = 0, h = 28, sig = (long ? 'L' : 'N') + (long ? uvKey().charAt(0) : '');
+    if (zoomEl) {
+      if (zoomEl.getAttribute('data-mp-k') !== sig.charAt(0)) { zoomEl.innerHTML = zoomHtml(long); zoomEl.setAttribute('data-mp-k', sig.charAt(0)); }
+      if (long) {
+        setAttr(zoomEl.querySelector('[data-mp-zoom="main"]'), 'aria-pressed', String(uv === null));
+        setAttr(zoomEl.querySelector('[data-mp-zoom="all"]'), 'aria-pressed', String(uv === 'all'));
+      }
+      zoomEl.hidden = false;
+      if (sig !== zoomSig || !zoomWH) { zoomWH = [zoomEl.offsetWidth, zoomEl.offsetHeight]; zoomSig = sig; }
+      w = zoomWH[0] || 0; h = zoomWH[1] || 28;
+    }
+    if (!w) {
+      font(c, 12, SYS);
+      var tw = function (s) { return Math.ceil(c.measureText(s).width) + 20; };
+      w = (long ? 6 + tw(L('Основной участок', 'Main part')) + tw(L('Весь маршрут', 'Whole route')) : tw(L('Вписать маршрут', 'Fit the route'))) + 64;
+    }
+    // (to the map's edges: 8 px of margin there and 4 px around)
+    return { x: W - w - 12, y: H - h - 12, w: w + 12, h: h + 12 };
+  }
+  // «+» and «−» at the limits (aria-disabled: the focus stays on the button).
+  function zoomState() {
+    if (!zoomEl || !fitPrev) return;
+    var f = viewF(), zi = zoomEl.querySelector('[data-mp-zoom="in"]'), zo = zoomEl.querySelector('[data-mp-zoom="out"]');
+    if (zi) setAttr(zi, 'aria-disabled', String(f >= fitPrev.fMax * (1 - 1e-6)));
+    if (zo) setAttr(zo, 'aria-disabled', String(f <= fitPrev.fMin * (1 + 1e-6)));
+  }
+  function onZoomClick(e) {
+    var b = e.target.closest && e.target.closest('[data-mp-zoom]');
+    if (!b || b.getAttribute('aria-disabled') === 'true') return;
+    var a = b.getAttribute('data-mp-zoom');
+    if (a === 'in' || a === 'out') zoomAt([W / 2, H / 2], a === 'in' ? 2 : 0.5);
+    else setView(a === 'all' ? 'all' : null);
+  }
+  // Ctrl + wheel zooms around the pointer (a trackpad pinch comes as one too); a plain wheel scrolls the page and
+  // says how to zoom, except in full screen, where it zooms. At most 2× per event.
+  function onWheel(e) {
+    if (!sc || !fitPrev || (e.target.closest && e.target.closest('.mp-menu, .mp-empty'))) return;
+    if (!e.ctrlKey && !(input && input.full)) { showHint(); return; }
+    e.preventDefault();
+    var k = -e.deltaY * (e.deltaMode === 1 ? 0.05 : e.deltaMode ? 1 : 0.002);
+    zoomAt(local(e), Math.pow(2, Math.max(-1, Math.min(1, k))));
+  }
+  function showHint() {
+    hintEl.hidden = false;
+    clearTimeout(hintT);
+    hintT = setTimeout(function () { hintEl.hidden = true; }, 1500);
+  }
+  function onDown(e) {
+    dragged = false;
+    press = null;
+    if (e.button !== 0 || !sc || !fitPrev || (e.target.closest && e.target.closest('.mp-zoom, .mp-menu, .mp-empty'))) return;
+    press = { x: e.clientX, y: e.clientY, id: e.pointerId, proj: projNow(), f: viewF(), on: false };
+  }
+  function onDrag(e) {
+    if (!press || e.pointerId !== press.id) return;
+    // the button came up off the map before the pan began (the pointer was not captured yet): the press is over
+    if (!(e.buttons & 1)) { onUp(e); return; }
+    var dx = e.clientX - press.x, dy = e.clientY - press.y;
+    if (!press.on) {
+      if (dx * dx + dy * dy < 16) return;
+      press.on = dragged = true;
+      mapEl.classList.add('is-drag'); mapEl.style.cursor = '';
+      try { mapEl.setPointerCapture(press.id); } catch (x) { /* a synthetic event: the pan ends on pointerup */ }
+      closeMenu(false);
+    }
+    var v = G.panBy(fitPrev, press.proj, press.f, dx, dy, W, H);
+    if (v) { uv = v; schedule(); }
+  }
+  function onUp(e) {
+    if (!press || e.pointerId !== press.id) return;
+    if (press.on) {
+      mapEl.classList.remove('is-drag');
+      try { mapEl.releasePointerCapture(press.id); } catch (x) { /* already released */ }
+    }
+    press = null;
+  }
+  function onDbl(e) {
+    if (!sc || (e.target.closest && e.target.closest('.mp-zoom, .mp-menu, .mp-empty'))) return;
+    e.preventDefault();
+    zoomAt(local(e), 2);
+  }
+
+  // Land, the grid of 10/5/2/1 degrees, ruler ticks on the four edges and a small cross at every grid point (the grid
+  // lines almost vanish over land; the crosses keep the grid readable). The grid and the crosses only where the view
+  // is (a zoomed map would draw thousands of lines otherwise).
   function drawCache() {
-    var c = cacheCx, p = sc.proj, path = d3.geoPath(p, c);
+    var c = cacheCx, p = sc.proj, path = d3.geoPath(p, c), b = sc.bounds, st = sc.step, grat = d3.geoGraticule().step([st, st]);
+    if (b && b[3] > -80 && b[1] < 80) grat.extent([[b[0], Math.max(-80, b[1])], [b[2], Math.min(80, b[3])]]);
     c.clearRect(0, 0, W, H);
     c.fillStyle = C.layer; c.beginPath(); path(land()); c.fill();
-    c.strokeStyle = C.grid; c.lineWidth = 1; c.beginPath(); path(d3.geoGraticule().step([sc.step, sc.step])()); c.stroke();
+    c.strokeStyle = C.grid; c.lineWidth = 1; c.beginPath(); path(grat()); c.stroke();
     c.fillStyle = C.muted;
     sc.ticks.top.forEach(function (t) { if (t.at > 2 && t.at < W - 2) c.fillRect(Math.round(t.at), 0, 1, 6); });
     sc.ticks.bottom.forEach(function (t) { if (t.at > 2 && t.at < W - 2) c.fillRect(Math.round(t.at), H - 6, 1, 6); });
@@ -366,8 +581,9 @@
     sc.ticks.right.forEach(function (t) { if (t.at > 2 && t.at < H - 2) c.fillRect(W - 6, Math.round(t.at), 6, 1); });
     if (sc.cell >= 40) {
       c.fillStyle = C.faint;
-      for (var lon = -180; lon < 180; lon += sc.step) {
-        for (var lat = -80; lat <= 80; lat += sc.step) {
+      var lon0 = b ? Math.floor(b[0] / st) * st : -180, lon1 = b ? b[2] : 180 - st, lat0 = b ? Math.max(-80, Math.ceil(b[1] / st) * st) : -80, lat1 = b ? Math.min(80, b[3]) : 80;
+      for (var lon = lon0; lon <= lon1; lon += st) {
+        for (var lat = lat0; lat <= lat1; lat += st) {
           var q = p([lon, lat]);
           if (!q || !isFinite(q[0]) || q[0] < 4 || q[0] > W - 4 || q[1] < 4 || q[1] > H - 4) continue;
           var x = Math.round(q[0]), y = Math.round(q[1]);
@@ -377,8 +593,8 @@
     }
   }
 
-  // Route (great-circle arcs, dashed where a neighbour's place is unknown), the dotted pointer of an anycast
-  // destination, place markers and the reticle on the selected hop.
+  // Route (great-circle arcs, dashed where a neighbour's place is unknown), the dotted pointers of an anycast
+  // destination and of a long route's far part, place markers and the reticle on the selected hop.
   function drawL0(d) {
     var c = cx[0];
     c.clearRect(0, 0, W, H);
@@ -393,8 +609,9 @@
       });
     });
     c.setLineDash([]);
-    if (sc.edge) {
-      var e = sc.edge, from = e.line[0], end = e.inside ? e.dbp : e.point, started = false;
+    [sc.edge, sc.far].forEach(function (e) {
+      if (!e) return;
+      var from = e.line[0], end = e.inside ? e.dbp : e.point, started = false;
       c.strokeStyle = C.muted; c.lineWidth = 1.5; c.setLineDash([1.5, 4]); c.lineCap = 'round';
       c.beginPath();
       for (var i = 1; i < e.line.length; i++) {
@@ -404,7 +621,7 @@
         if (!started) { c.moveTo(p[0], p[1]); started = true; } else c.lineTo(p[0], p[1]);
       }
       c.stroke(); c.setLineDash([]); c.lineCap = 'butt';
-    }
+    });
     // The reticle goes under the markers: a neighbour's marker covers a bracket instead of being cut by it.
     var gs = groupOf(d.sel);
     if (gs) reticle(c, gs.p[0], gs.p[1], gs.mk);
@@ -427,8 +644,8 @@
   }
   function badgeOf(h, d) { return { ttl: h.ttl, status: h.status, sel: h.ttl === d.sel }; }
   function notesOf(run, d) {
-    var out = [], multi = run.length > 1;
-    run.forEach(function (h, i) {
+    var out = [], multi = run.length > 1, only = false;
+    run.forEach(function (h) {
       var k = kindOf(h.ttl), g = h.geo || {}, pre = multi ? { t: h.ttl + ':', f: 'monoS', gap: 5 } : null;
       function lead(col) { return pre ? [{ t: pre.t, f: 'monoS', c: col, gap: 5 }] : []; }
       if (h.origin) out.push({ parts: lead(C['loss-text']).concat([{ t: stOf(h, d.m), c: C['loss-text'] }]) });
@@ -446,7 +663,8 @@
         out.push({ parts: [{ t: L('база: ', 'database: ') + placeName(g) + (d.mask ? L(': сомнительно', ': doubtful') : L(': сомнительно,', ': doubtful,')), c: C.text }] });
         if (!d.mask) out.push({ parts: [{ t: kmT(g.distKm) + L(' по волокну требуют от ', ' in fibre need at least ') + msT(g.fiberMs), c: C.text }] });
       }
-      if (k === 'country' && i === 0) out.push({ parts: [{ t: L('известна только страна', 'only the country is known'), c: C.text }] });
+      // (not for a place the picture shows at the country level: its city is known, only hidden)
+      if (k === 'country' && !only && !h.cityHidden) { only = true; out.push({ parts: [{ t: L('известна только страна', 'only the country is known'), c: C.text }] }); }
       if (k === 'anchored') out.push({ parts: [{ t: L('показана у последнего точного хопа', 'shown at the last hop with a known place'), c: C.text }] });
     });
     return out;
@@ -467,10 +685,13 @@
     });
     return rows;
   }
+  // A badge's width in a callout row, or the dash's that stands for the hops between two badges (DASH px).
+  var DASH = 9;
+  function slotW(c, b) { return b.dash ? DASH : badgeW(c, b.ttl); }
   function measure(c, rows, kind) {
     var pad = 6, gapB = 3, gapT = 7, textX = 0, w = 0, hh = 0;
     rows.forEach(function (r) {
-      if (r.badges) textX = Math.max(textX, r.badges.reduce(function (s, b) { return s + badgeW(c, b.ttl) + gapB; }, 0) - gapB + gapT);
+      if (r.badges) textX = Math.max(textX, r.badges.reduce(function (s, b) { return s + slotW(c, b) + gapB; }, 0) - gapB + gapT);
     });
     rows.forEach(function (r) {
       r.h = r.badges ? 24 : 17;
@@ -489,6 +710,7 @@
       var x = x0 + 6;
       if (r.badges) {
         r.badges.forEach(function (b) {
+          if (b.dash) { c.fillStyle = C.text; c.fillRect(x + 1, y + 7, DASH - 2, 2); x += DASH + 3; return; }
           var bw = badge(c, x, y, b);
           hits.push({ x: x, y: y, w: bw, h: 22, ttl: b.ttl, k: 0 });
           x += bw + 3;
@@ -509,7 +731,7 @@
     var out = [];
     sc.groups.forEach(function (g) {
       var hs = g.ttls.filter(function (t) { return t > 0; }).map(function (t) { return d.byTtl[t]; }).filter(Boolean);
-      if (!hs.length) return;
+      if (!hs.length || !G.inView(g.p, W, H, 0)) return; // (off a zoomed view)
       var pr = 6, sel = false;
       hs.forEach(function (h) {
         var gg = h.geo || {};
@@ -535,8 +757,38 @@
           { parts: [{ t: d.mask ? L('ответ за ', 'reply in ') + msT(g2.rttMs) : kmT(g2.distKm) + L(', свету нужно от ', ': light needs at least ') + msT(g2.vacuumMs) + L(', ответ за ', ', reply in ') + msT(g2.rttMs), c: C.text }] },
         ] });
     }
+    var fj = sc.far ? farJob(d) : null;
+    if (fj) out.push(fj);
     out.sort(function (a, b) { return a.prio - b.prio || a.first - b.first; });
     return out;
+  }
+  // The far part of a long route at its pointer: the badges of its hops, where it goes (the country and the city of
+  // its first place, from the database) and how far that is from the main part's last hop; the loss origin and an
+  // impossible destination there say so too. Right after the selected hop: it has the least room, at the edge.
+  // More than three hops there: the first, the selected one and the last, a dash for the hops between them (the plate
+  // stays as wide however long the far part is; the ribbon lists every hop). Its compact plate keeps the country.
+  function farJob(d) {
+    var e = sc.far, hs = e.ttls.map(function (t) { return d.byTtl[t]; }).filter(Boolean), pr = 0.9;
+    if (!hs.length) return null;
+    var g = (d.byTtl[e.firstTtl] || {}).geo || {}, cn = g.country || g.cc || '', to = [g.city, cn].filter(Boolean).join(', ');
+    var bs = [], at = -1;
+    hs.forEach(function (h, i) {
+      if (hs.length > 3 && i > 0 && i < hs.length - 1 && h.ttl !== d.sel) return;
+      if (at >= 0 && i > at + 1) bs.push({ dash: true });
+      bs.push(badgeOf(h, d)); at = i;
+    });
+    var rows = [
+      { badges: bs, parts: [{ t: '→' + (to ? ' ' + to : '') }] },
+      { parts: [{ t: L('около ', 'about ') + kmT(Math.round(e.km / 100) * 100) + L(' от хопа ', ' from hop ') + e.lastTtl, c: C.text }] },
+    ];
+    hs.forEach(function (h) {
+      if (h.ttl === d.sel) pr = -0.1;
+      if (h.origin) rows.push({ parts: [{ t: h.ttl + ':', f: 'monoS', c: C['loss-text'], gap: 5 }, { t: stOf(h, d.m), c: C['loss-text'] }] });
+    });
+    var a = e.anchored != null ? d.byTtl[e.anchored] : null;
+    if (a) rows.push({ parts: [{ t: a.ttl + ':', f: 'monoS', c: C.text, gap: 5 }, { t: L('по базе ', 'database says ') + placeName(a.geo || {}) + L(': невозможно', ': impossible'), c: C.text }] });
+    return { key: 'far', g: null, p: e.point, r0: 10, rm: 8, tan: [Math.cos(e.angle), Math.sin(e.angle)], prio: pr, first: hs[0].ttl, badges: bs, rows: rows,
+      compact: [{ badges: bs, parts: [{ t: '→' + (cn ? ' ' + cn : '') }] }] };
   }
   // 8 directions x leaders of 16, 40, 72 px; N and S also shifted by a third of the plate: 36 places to try.
   var DIRS = [['E', 1, 0], ['NE', 1, -1], ['N', 0, -1], ['NW', -1, -1], ['W', -1, 0], ['SW', -1, 1], ['S', 0, 1], ['SE', 1, 1]];
@@ -625,9 +877,10 @@
     for (var i = 0; i < sc.samples.length; i++) if (inBox(sc.samples[i][0], sc.samples[i][1], b)) n++;
     return n;
   }
-  // In order, each callout takes the best place for its full plate, else for its compact one (badges only); a place
-  // that would leave a later callout no room even for its compact plate is skipped while another one does. A plate
-  // should not hide a stretch of the route (more than ROUTE samples): the line breaks under it, in the picture too.
+  // In order, each callout takes the best place for its full plate, else for its compact one (badges only; the far
+  // part's keeps its country); a place that would leave a later callout no room even for its compact plate is
+  // skipped while another one does. A plate should not hide a stretch of the route (more than ROUTE samples): the
+  // line breaks under it, in the picture too.
   // When one does, the pass runs again with a wider look ahead: of the places above, a full plate takes the
   // cheapest that leaves the fewest plates on the route (itself, and each later callout whose last place off the
   // route it would take); that layout is kept when it hides less of the route and labels as much. When a hop still
@@ -637,7 +890,7 @@
   var ROUTE = 2;
   function placeCallouts(c, d, ob) {
     var jobs = jobsOf(d), next = {}, at;
-    jobs.forEach(function (job) { job.pf = measure(c, job.rows, 'f'); job.pc = measure(c, [{ badges: job.badges, parts: [] }], 'c'); });
+    jobs.forEach(function (job) { job.pf = measure(c, job.rows, 'f'); job.pc = measure(c, job.compact || [{ badges: job.badges, parts: [] }], 'c'); });
     function others(list, i) {
       var o = { taken: ob.taken, marks: ob.marks, lines: ob.lines, plates: [], leaders: [] };
       list.forEach(function (a, j) { if (a && j !== i) { o.plates.push(a.b); if (a.ld) o.leaders.push(a.ld); } });
@@ -751,7 +1004,10 @@
     font(c, 11, SYS);
     var crw = c.measureText(credit).width;
     var w = Math.ceil(pad * 2 + Math.max(kW + Math.max.apply(null, lines.map(function (l) { return l.w; })), crw)), h = pad * 2 + lines.length * 20 + (credit ? 12 : -4);
-    return { lines: lines, kW: kW, w: w, h: h, credit: credit, box: { x: 8, y: H - 34 - h, w: w, h: h } };
+    // on a narrow map the zoom (bottom right, its box ctlB) reaches under the legend's right end: the legend stands
+    // above it
+    var lift = ctlB && ctlB.x < 8 + w && ctlB.y < H - 34 ? H - 34 - ctlB.y : 0;
+    return { lines: lines, kW: kW, w: w, h: h, credit: credit, box: { x: 8, y: H - 34 - lift - h, w: w, h: h } };
   }
   function drawLegend(c, lg) {
     var b = lg.box, pad = 8;
@@ -847,8 +1103,9 @@
     c.clearRect(0, 0, W, H);
     hits = [];
     var hud = hudBox(c, d), lg = legendLayout(c, d.m), sp = scaleLayout(c, d, hud, sc.proj, sc.step);
-    var ob = { taken: [hud, lg.box, sp.box], plates: [], leaders: [], lines: [], marks: [] };
+    var ob = { taken: [hud, lg.box, sp.box].concat(ctlB ? [ctlB] : []), plates: [], leaders: [], lines: [], marks: [] };
     if (sc.edge && !sc.edge.inside) ob.taken.push({ x: sc.edge.point[0] - 10, y: sc.edge.point[1] - 10, w: 20, h: 20, own: 'edge' });
+    if (sc.far) ob.taken.push({ x: sc.far.point[0] - 10, y: sc.far.point[1] - 10, w: 20, h: 20, own: 'far' });
     // Markers: the box a plate may not cover, the group they belong to, the point and how far the marker reaches.
     var selG = groupOf(d.sel);
     sc.groups.forEach(function (g) {
@@ -864,14 +1121,15 @@
       s.parts.forEach(function (q) { for (var i = 1; i < q.length; i++) ob.lines.push([q[i - 1][0], q[i - 1][1], q[i][0], q[i][1]]); });
     });
     placeCallouts(c, d, ob);
-    if (sc.edge && !sc.edge.inside) {
-      var ex = sc.edge.point[0], ey = sc.edge.point[1], a = sc.edge.angle;
+    [sc.edge && !sc.edge.inside ? sc.edge : null, sc.far].forEach(function (e) {
+      if (!e) return;
+      var ex = e.point[0], ey = e.point[1], a = e.angle;
       c.fillStyle = C.title; c.beginPath();
       c.moveTo(ex + Math.cos(a) * 8, ey + Math.sin(a) * 8);
       c.lineTo(ex + Math.cos(a + 2.4) * 7, ey + Math.sin(a + 2.4) * 7);
       c.lineTo(ex + Math.cos(a - 2.4) * 7, ey + Math.sin(a - 2.4) * 7);
       c.closePath(); c.fill();
-    }
+    });
     drawLegend(c, lg);
     drawScale(c, sp);
     degreeLabels(c, ob.taken.concat(ob.plates, ob.marks));
@@ -934,7 +1192,7 @@
   // The clock: every hop at its window minimum, hops without one in between, made monotone (MAPG.clock); the whole
   // route takes 2.4 s (0.008-0.3 s per ms of RTT); a trail of five squares 0.017 c_dest apart. A lost round stops at
   // the hop where its loss starts and leaves a red cross there for 1.5 s; a reply rests at the target for 0.7 s (as
-  // in the approved mockup).
+  // in the approved mockup). Hops of a long route's folded far part are at its pointer's arrow (seenAt, pastFar).
   var REST = 0.7, CROSS = 1.5, FRAME = 33, rid = 0;
   // The packet's clock with this draw's numbers: the layout keeps the path, the window minimums move with live data.
   function retime(d) {
@@ -967,6 +1225,15 @@
     c.moveTo(p[0] - 6.5, p[1] - 6.5); c.lineTo(p[0] + 6.5, p[1] + 6.5); c.moveTo(p[0] + 6.5, p[1] - 6.5); c.lineTo(p[0] - 6.5, p[1] + 6.5); c.stroke();
     c.lineCap = 'butt';
   }
+  // Where a hop of the packet's path shows: one of a long route's far part, folded into its pointer, shows there.
+  function seenAt(e) { return sc.folded && sc.far && e.ttl > sc.far.lastTtl ? sc.far.point : e.p; }
+  // A point of the packet on its way into a folded far part (nextTtl: the hop it goes to) once it is past the
+  // pointer's arrow or off the map: the packet waits at the arrow, its trail goes on out of sight.
+  function pastFar(q, nextTtl) {
+    var f = sc.folded && sc.far;
+    if (!f || nextTtl == null || nextTtl <= f.lastTtl) return false;
+    return !G.inView(q, W, H, 16) || G.dist(q, f.line[0]) >= G.dist(f.point, f.line[0]);
+  }
   // The packet's head: a diamond on a sea-coloured knockout, so it reads over the route.
   function head(c, p) { c.fillStyle = C.well; diamond(c, p[0], p[1], 8.5); c.fillStyle = C.packet; diamond(c, p[0], p[1], 5.5); }
   function hudRound(c, R) {
@@ -982,17 +1249,17 @@
     var pth = timed(R), n = pth.length, spm = R.spm, r = t / spm, li = -1, k;
     if (!n || t >= R.end) return null;
     for (k = 0; k < n; k++) if (pth[k].ttl === R.li) li = k;
-    if (li >= 0 && r >= pth[li].c) { cross(c, pth[li].p); hudRound(c, R); return { ttl: R.li, lost: true }; }
-    if (li < 0 && r >= pth[n - 1].c) { head(c, pth[n - 1].p); hudRound(c, R); return { ttl: pth[n - 1].ttl, lost: false }; }
+    if (li >= 0 && r >= pth[li].c) { cross(c, seenAt(pth[li])); hudRound(c, R); return { ttl: R.li, lost: true }; }
+    if (li < 0 && r >= pth[n - 1].c) { head(c, seenAt(pth[n - 1])); hudRound(c, R); return { ttl: pth[n - 1].ttl, lost: false }; }
     var pos = G.posAt(pth, r), cd = pth[n - 1].c;
     c.fillStyle = C.title;
     [4, 4, 3, 3, 2].forEach(function (s, i) {
       var rr = r - (i + 1) * 0.017 * cd;
       if (rr < 0) return;
-      var q = G.posAt(pth, rr).p;
-      c.fillRect(Math.round(q[0] - s / 2), Math.round(q[1] - s / 2), s, s);
+      var q = G.posAt(pth, rr);
+      if (!pastFar(q.p, q.nextTtl)) c.fillRect(Math.round(q.p[0] - s / 2), Math.round(q.p[1] - s / 2), s, s);
     });
-    head(c, pos.p);
+    head(c, pastFar(pos.p, pos.nextTtl) ? sc.far.point : pos.p);
     // ttl 0 is the home: «дом → 1» for the first moments of a round
     hudLine(c, [{ t: L('раунд ', 'round ') + R.n, c: C.muted }, { t: (pos.lastTtl ? L('хоп ', 'hop ') + pos.lastTtl : L('дом', 'home')) + ' → ' + (pos.nextTtl != null ? pos.nextTtl : pos.lastTtl), f: 'mono', c: C.text },
       { t: 'RTT ' + ms1(r), f: 'mono', c: C.title }]);
@@ -1337,13 +1604,15 @@
     return i >= 0 ? ttls[(i + 1) % ttls.length] : ttls[0];
   }
   function onMapClick(e) {
-    if (!menuEl.hidden || !sc) return;
+    if (dragged) { dragged = false; return; } // the end of a pan
+    if (!menuEl.hidden || !sc || (e.target.closest && e.target.closest('.mp-zoom'))) return;
     var p = local(e), t = hitAt(p[0], p[1]);
     if (t != null && opt.onSelect) opt.onSelect(t);
   }
   function onMapMove(e) {
-    var p = local(e);
-    mapEl.style.cursor = sc && hitAt(p[0], p[1]) != null ? 'pointer' : '';
+    if (press && press.on) return;
+    var p = local(e), over = !(e.target.closest && e.target.closest('.mp-zoom, .mp-menu'));
+    mapEl.style.cursor = sc && over && hitAt(p[0], p[1]) != null ? 'pointer' : '';
   }
   // Right click: «Дом здесь» (the point rounded to 0.1 degree) and «Сбросить дом» when the home was set by hand.
   function openMenu(x, y) {
@@ -1384,9 +1653,14 @@
     var p = local(e);
     openMenu(p[0], p[1]);
   }
+  // Keys on the map: the menu (ContextMenu, Shift + F10), «+» and «−» zoom around the centre, «0» fits the route.
   function onMapKey(e) {
     if (e.target !== mapEl) return;
-    if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) { e.preventDefault(); openMenu(W / 2, H / 2); }
+    if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) { e.preventDefault(); openMenu(W / 2, H / 2); return; }
+    if (!sc || e.ctrlKey || e.altKey || e.metaKey) return;
+    if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomAt([W / 2, H / 2], 2); }
+    else if (e.key === '-') { e.preventDefault(); zoomAt([W / 2, H / 2], 0.5); }
+    else if (e.key === '0') { e.preventDefault(); setView(null); }
   }
   function onMenuClick(e) {
     var b = e.target.closest && e.target.closest('[data-mp-act]');
@@ -1423,7 +1697,9 @@
   // without the packet and its readout, the hop ribbon (right of the map; under it in the square) and the sources.
   // data: {m, geo, home} as MAP.update takes it (null: the map's own). Returns a data: URL of the PNG, or null when
   // the route has no places. The live map's drawing state is put aside while the picture is drawn, then comes back.
-  var SIZES = { wide: [1200, 675], square: [1080, 1080] };
+  var SIZES = { wide: [1200, 675], square: [1080, 1080] }, PNG_K = 2;
+  // The file's size in pixels for a layout (drawn at 2× for sharpness): [2400, 1350] or [2160, 2160].
+  function pngSize(size) { var s = SIZES[size] || SIZES.wide; return [s[0] * PNG_K, s[1] * PNG_K]; }
   // The colours of a theme from the tokens, read on a hidden probe with that data-theme.
   function themeColors(theme) {
     var el = document.createElement('div'), o = {};
@@ -1446,6 +1722,11 @@
   // itself (a provider whose core has private addresses), keeps its address but only its country, and the header
   // drops its name (a reverse name like dns1.bak.example.net gives the city away). A destination of your network
   // is hidden in the header too. Callouts leave out the distances from home too (two of them would point at it).
+  // Any other hop, or the destination, whose place is in the home city is shown at the country level as well (its
+  // country's label point, no city, no name; a destination also loses its name in the header): a later operator's
+  // router in your city, or a destination after provider hops without an AS number, would name the city. In the home
+  // city: the automatic home's city and country, or, for a home set by hand (no city) or a place without a city name,
+  // within HOME_KM of the real home point. Such places say no «известна только страна»: the database knows the city.
   function masked(inp) {
     var hops = inp.m.hops || [], hide = {}, first = null, k = 0, atDest = false, CP = window.WT_COUNTRY_POINTS || {};
     hops.forEach(function (x) { if (x.geo && x.geo.level === 'own') hide[x.ttl] = true; });
@@ -1464,16 +1745,24 @@
     var dest = hops.filter(function (x) {
       return x.dest && !hide[x.ttl] && x.addr && x.geo && (first != null ? x.geo.asn === first : atDest && k === 0);
     })[0] || null;
-    var dpt = dest && dest.geo.cc ? CP[dest.geo.cc] || null : null;
+    var hm = inp.home, hll = hm && hm.lat != null && hm.lon != null && isFinite(hm.lat) && isFinite(hm.lon) ? [hm.lon, hm.lat] : null;
+    function inHome(g) {
+      if (!hll || !g || (g.level !== 'city' && g.level !== 'country')) return false;
+      if (hm.city && g.city) return g.city === hm.city && g.cc === hm.cc;
+      return g.lat != null && g.lon != null && isFinite(g.lat) && isFinite(g.lon) && homeKm(hll, [g.lon, g.lat]) <= HOME_KM;
+    }
     var out = hops.map(function (x) {
       if (hide[x.ttl]) return Object.assign({}, x, { addr: L('скрыт', 'hidden'), name: null, masked: true, geo: own });
-      if (x !== dest) return x;
-      return Object.assign({}, x, { name: null, geo: Object.assign({}, own, dpt ? { level: 'country', cc: dest.geo.cc, country: dest.geo.country || null, lat: dpt[1], lon: dpt[0] } : { level: 'none' }) });
+      if (x !== dest && !inHome(x.geo)) return x;
+      var cp = x.geo.cc ? CP[x.geo.cc] || null : null;
+      return Object.assign({}, x, { name: null, cityHidden: true,
+        geo: Object.assign({}, own, cp ? { level: 'country', cc: x.geo.cc, country: x.geo.country || null, lat: cp[1], lon: cp[0] } : { level: 'none' }) });
     });
     // The header: no second label (reverse name or address) for such a destination; a hidden one typed as an address
     // is not written either.
     var tg = inp.m.target, dh = hops.filter(function (x) { return x.dest; })[0] || null, gone = !!(dh && hide[dh.ttl]);
-    if (tg && (dest || gone)) {
+    var dc = !!(dh && out[hops.indexOf(dh)].cityHidden);
+    if (tg && (dc || gone)) {
       tg = Object.assign({}, tg, { name: null });
       if (gone && /^[0-9.]+$|:/.test(String(tg.host || ''))) tg.host = L('скрыт', 'hidden');
     }
@@ -1489,6 +1778,14 @@
       m: Object.assign({}, inp.m, { hops: out, target: tg }), geo: inp.geo,
       home: home && pt ? { lat: pt[1], lon: pt[0], city: null, cc: cc || null, country: null, source: 'auto', ttl: null } : null,
     };
+  }
+  // The home city's reach when no city name can be compared (km), and the great-circle distance between two [lon, lat]
+  // points in km (plain Math, as the core's physics).
+  var HOME_KM = 50;
+  function homeKm(a, b) {
+    var r = Math.PI / 180, dp = (b[1] - a[1]) * r, dl = (b[0] - a[0]) * r;
+    var h = Math.pow(Math.sin(dp / 2), 2) + Math.cos(a[1] * r) * Math.cos(b[1] * r) * Math.pow(Math.sin(dl / 2), 2);
+    return 2 * 6371 * Math.asin(Math.min(1, Math.sqrt(h)));
   }
   function ctx2d(w, h, k) {
     var c = document.createElement('canvas');
@@ -1575,7 +1872,7 @@
     var d = derive({ m: Object.assign({}, src.m, { selected: null }), geo: src.geo, home: src.home });
     if (d.empty) return null;
     d.mask = !!o.mask;
-    var sz = SIZES[o.size] || SIZES.wide, PW = sz[0], PH = sz[1], K = 2, pad = 24, top = 48, foot = 32, gap = 16, bodyH = PH - top - foot, mapR, ribR;
+    var sz = SIZES[o.size] || SIZES.wide, PW = sz[0], PH = sz[1], K = PNG_K, pad = 24, top = 48, foot = 32, gap = 16, bodyH = PH - top - foot, mapR, ribR;
     if (PW > PH) {
       // the ribbon as wide as the status words of its usual lines need (the app's 448 px column at 1320 px)
       mapR = { x: pad, y: top, w: PW - 2 * pad - 412 - gap, h: bodyH };
@@ -1586,13 +1883,13 @@
       mapR = { x: pad, y: top, w: PW - 2 * pad, h: bodyH - rh - gap };
       ribR = { x: pad, y: top + mapR.h + gap, w: PW - 2 * pad, h: rh };
     }
-    var keep = { W: W, H: H, DPR: DPR, C: C, sc: sc, fitPrev: fitPrev, choicePrev: choicePrev, hits: hits, cx: cx, cache: cache, cacheCx: cacheCx };
+    var keep = { W: W, H: H, DPR: DPR, C: C, sc: sc, fitPrev: fitPrev, choicePrev: choicePrev, hits: hits, cx: cx, cache: cache, cacheCx: cacheCx, uv: uv, ctlB: ctlB };
     var out = document.createElement('canvas');
     out.width = PW * K; out.height = PH * K;
     try {
       XP = true;
       C = themeColors(o.theme === 'light' ? 'light' : 'dark');
-      W = mapR.w; H = mapR.h; DPR = K; fitPrev = null; choicePrev = {}; hits = []; sc = null;
+      W = mapR.w; H = mapR.h; DPR = K; fitPrev = null; choicePrev = {}; hits = []; sc = null; uv = null; ctlB = null; // the default view, never the user's; no zoom
       cx = [ctx2d(W, H, K), null, ctx2d(W, H, K)];
       cacheCx = ctx2d(W, H, K); cache = cacheCx.canvas;
       layout(d, 'png' + PW + 'x' + PH, 'png');
@@ -1623,7 +1920,7 @@
     } finally {
       XP = false;
       W = keep.W; H = keep.H; DPR = keep.DPR; C = keep.C; sc = keep.sc; fitPrev = keep.fitPrev; choicePrev = keep.choicePrev; hits = keep.hits;
-      cx = keep.cx; cache = keep.cache; cacheCx = keep.cacheCx;
+      cx = keep.cx; cache = keep.cache; cacheCx = keep.cacheCx; uv = keep.uv; ctlB = keep.ctlB;
     }
     return out.toDataURL('image/png');
   }
@@ -1667,6 +1964,8 @@
     host = h || null;
     if (!host) {
       closeMenu(false); observe(false); quiet(); lastD = null;
+      press = null; clearTimeout(hintT);
+      if (mapEl) { mapEl.classList.remove('is-drag'); hintEl.hidden = true; }
       if (an.minPoll) { clearTimeout(an.minPoll); an.minPoll = 0; }
       an.min = false;
       return;
@@ -1687,8 +1986,16 @@
     draw();
     return true;
   }
+  // Test hook: how the map is zoomed now (mode: 'default', 'all' or 'user'; f: the zoom as a share of the default
+  // view's scale, within fMin-fMax; long: the route opens on its main part; folded: its far part is the pointer at
+  // the edge; far: that pointer is drawn).
+  function viewNow() {
+    if (!sc || !fitPrev) return null;
+    return { mode: uv === null ? 'default' : uv === 'all' ? 'all' : 'user', f: viewF(), fMin: fitPrev.fMin, fMax: fitPrev.fMax,
+      long: !!fitPrev.long, folded: !!sc.folded, far: !!sc.far, step: sc.step, widthKm: Math.round(G.km(G.inv(sc.proj, [0, H / 2]) || [0, 0], G.inv(sc.proj, [W, H / 2]) || [0, 0])) };
+  }
   window.MAP = {
-    init: init, attach: attach, update: update, renderAt: renderAt, png: png, hasPlaces: hasPlaces,
+    init: init, attach: attach, update: update, renderAt: renderAt, png: png, pngSize: pngSize, hasPlaces: hasPlaces, view: viewNow,
     // A round of the traced target finished: its packet starts with the first snapshot that has it.
     round: onRound,
     setPaused: function (on) {

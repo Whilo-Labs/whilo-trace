@@ -19,14 +19,23 @@
 .tr-hc > .tr-tbl { padding-top: 0; }
 /* Full screen: the card covers the window, always dark (data-theme on the card) */
 .tr-hc.is-full { position: fixed; inset: 0; z-index: 40; display: flex; flex-direction: column; border-radius: 0; background: var(--layer); color: var(--text); }
-.tr-hc.is-full > .mp-host { flex: 1 1 auto; min-height: 0; }
+.tr-hc.is-full > .mp-host { flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--control-hover) transparent; }
 .tr-hc.is-full .mp-stage { height: 100%; }
 
-/* ---------- stage: the map well on the left, the side column on the right (448 px; 340 px below about 1100 px of
-   card width; under the map below 820 px). The card stays about clamp(420px, 100vh - 230px, 760px) high. ---------- */
+/* ---------- stage: the map well on the left, the side column on the right (448 px); when the card is narrower than
+   1100 px the selected hop and the ribbon go under the map, side by side (one under the other below 820 px), and
+   the map takes the whole width. The stage ends at the window's bottom while the page is at its top: --mp-h is the
+   room from where it starts (map.js fitStage, after the conclusions above it), 100vh - 220px until the map has
+   measured it. At a window height of 860 px that is 639 px with two lines of conclusions (the ribbon shows all 11
+   hops of the upwork demo route whichever hop is selected) and 592 px with four (the google one: with a hop that has
+   the physics gauge selected, the ribbon scrolls 15-45 px). ---------- */
 .mp-host { display: block; container: mp / inline-size; padding: 0 var(--s3) var(--s3); }
-.mp-stage { display: grid; grid-template-columns: minmax(0, 1fr) 448px; height: clamp(354px, calc(100vh - 296px), 694px); }
-.mp-map { position: relative; min-width: 0; min-height: 0; overflow: hidden; border-radius: var(--radius-ctl); background: var(--well); outline: none; }
+.mp-stage { display: grid; grid-template-columns: minmax(0, 1fr) 448px; height: clamp(354px, var(--mp-h, calc(100vh - 220px)), 694px); }
+.mp-map {
+  position: relative; min-width: 0; min-height: 0; overflow: hidden; border-radius: var(--radius-ctl); background: var(--well); outline: none;
+  -webkit-user-select: none; user-select: none; cursor: grab;
+}
+.mp-map.is-drag { cursor: grabbing; }
 .mp-map:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .mp-map canvas { position: absolute; left: 0; top: 0; display: block; }
 .mp-side {
@@ -36,7 +45,7 @@
 .mp-side .mono { font-family: "Cascadia Mono", ui-monospace, Consolas, Menlo, "DejaVu Sans Mono", monospace; font-variant-numeric: tabular-nums; }
 
 /* empty map: why there are no places */
-.mp-empty { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; padding: var(--s5); text-align: center; }
+.mp-empty { position: absolute; inset: 0; z-index: 3; display: flex; align-items: center; justify-content: center; padding: var(--s5); text-align: center; cursor: default; }
 .mp-empty[hidden] { display: none; }
 .mp-empty h3 { font-size: 16px; }
 .mp-empty p { max-width: 460px; margin: var(--s2) 0 0; font-size: 13px; line-height: 1.45; color: var(--text); }
@@ -50,6 +59,24 @@
 }
 .mp-menu button:hover, .mp-menu button:focus-visible { background: var(--float-hover); outline: none; }
 .mp-menu .aside { font-size: 12px; color: var(--text); font-family: "Cascadia Mono", ui-monospace, Consolas, Menlo, "DejaVu Sans Mono", monospace; }
+
+/* zoom, bottom right (map.js zoomBox), in the band the map keeps for the legend; the callouts keep clear of it; not
+   in the picture. «Вписать маршрут», or on a long route «Основной участок / Весь маршрут», then «−» and «+».
+   The app's small buttons; the switch is the app's segmented control on a --layer plate, as «Таблица / Карта» is on
+   a --well one. */
+.mp-zoom { position: absolute; right: 8px; bottom: 8px; z-index: 3; display: flex; align-items: center; gap: 4px; cursor: default; }
+.mp-zoom[hidden] { display: none; }
+.mp-zoom .seg { padding: 2px; }
+.mp-zoom .seg button { height: 24px; }
+.mp-zoom .btn-icon .ico { width: 16px; height: 16px; flex: none; }
+.mp-zoom .btn[aria-disabled="true"] { color: var(--faint); cursor: default; }
+.mp-zoom .btn[aria-disabled="true"]:hover { background: var(--control); }
+/* a plain wheel over the map scrolls the page: how to zoom instead */
+.mp-hint {
+  position: absolute; left: 50%; top: 50%; z-index: 4; transform: translate(-50%, -50%); padding: 6px 12px;
+  border-radius: var(--radius-chip); background: var(--tip); color: var(--on-tip); font-size: 13px; white-space: nowrap; pointer-events: none;
+}
+.mp-hint[hidden] { display: none; }
 
 /* ---------- side column: the selected hop (lies on the card) ---------- */
 .mp-panel { flex: none; display: flex; flex-direction: column; gap: 10px; padding-top: 2px; }
@@ -145,25 +172,18 @@
 .mp-pic .rp-body .mp-pic-view p { margin: 0; padding: 0 var(--s4); text-align: center; } /* no places: the dialog's text, centred */
 .mp-pic-saved { margin-top: 16px; }
 
-/* ---------- narrow card: the side column narrows, then goes under the map (after the rules above: same specificity) ---------- */
+/* ---------- narrow card: the map takes the whole width (as tall as the room under it, --mp-h), the selected hop and
+   the ribbon go under it, side by side (each about as wide as the side column), one under the other below 820 px.
+   In full screen the map leaves the bottom 160 px of the window to the tops of the two, where the wheel scrolls them
+   into view (over the map it zooms). (After the rules above: same specificity.) ---------- */
 @container mp (max-width: 1099px) {
-  .mp-stage { grid-template-columns: minmax(0, 1fr) 340px; }
-  .mp-read { grid-template-columns: 1fr 1fr; }
-  /* 340 px: the status goes under the name, the ribbon keeps only the status mark (the words are the row's title) */
-  .mp-ph { grid-template-columns: auto minmax(0, 1fr); }
-  .mp-state { grid-column: 2; }
-  .mp-row { grid-template-columns: 3ch 15.5ch 5ch 7ch 3ch; }
-  .mp-row .s { display: none; }
-}
-@container mp (max-width: 819px) {
   .mp-stage { display: block; height: auto; }
-  .mp-map { height: clamp(320px, calc(100vh - 300px), 640px); }
-  .mp-side { padding: var(--s4) 0 0; overflow: visible; }
+  .mp-map { height: clamp(320px, var(--mp-h, calc(100vh - 300px)), 640px); }
+  .tr-hc.is-full .mp-map { height: max(300px, calc(100% - 160px)); }
+  .mp-side { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; gap: var(--s4); padding: var(--s4) 0 0; overflow: visible; }
   .mp-rib { flex: none; max-height: 380px; }
   .mp-rows { flex: 1 1 auto; }
-  /* under the map the column is the card's width again */
-  .mp-ph { grid-template-columns: auto minmax(0, 1fr) auto; }
-  .mp-state { grid-column: auto; }
-  .mp-row { grid-template-columns: 3ch 15.5ch 5ch 7ch 3ch minmax(0, 1fr); }
-  .mp-row .s { display: block; }
+}
+@container mp (max-width: 819px) {
+  .mp-side { display: flex; gap: var(--s3); }
 }

@@ -7,6 +7,7 @@
 // Places database of the route map: ?mock=geo-new (a newer month is out, the check offers it), geo-none (no
 // database: no places, the map shows its empty state), geo-broken (the database does not read). With ?mock=live
 // every fifth round of the google row is lost from hop 7 on, so the map's packet shows a lost round now and then.
+// The upwork row has a long route (Baku to London, then New York and Ashburn): the map opens on its main part.
 // ?mock=calm: the system asks for reduced motion (prefers-reduced-motion), the map starts without its packet.
 // Settings live in sessionStorage, so every tab has its own.
 (function () {
@@ -28,6 +29,10 @@
   // Loss lands on the same moments for every target behind the provider hop: a path problem.
   var LOSS = [16, 17, 43, 70, 71, 97, 109];
   var G_LOSS = [16, 43, 44, 70, 97, 109, 110]; // the google row and its demo route (TRACE_G), from hop 7 on
+  // The upwork row and its long route (TRACE_U), from hop 9 (the ocean crossing) on; the target's series (a US
+  // destination: at least 97 ms from Baku in fibre).
+  var U_LOSS = [16, 43, 70, 97, 109];
+  var U_DEST = { seed: 41, base: 133, noise: 3, spikes: [[84, 231], [85, 188]] };
   var gRound = 0, gLost = false; // ?mock=live: the google row's rounds so far, whether the last one was lost
   var END = new Date(2026, 9, 27, 16, 0, 0).getTime(), END0 = END;
   var TICKS = {
@@ -53,7 +58,7 @@
     { id: 'steam', targetId: 3, host: 'store.steampowered.com', name: '198.51.100.26', ip: '198.51.100.26', probe: 'icmp', interval: 2.5, max: 150,
       series: S({ seed: 37, base: 36, noise: 3, spikes: [[61, 128], [62, 104]] }), loss: [17, 43, 70, 71, 97, 110], status: 'loss' },
     { id: 'upwork', targetId: 4, host: 'www.upwork.com', name: '198.51.100.104', ip: '198.51.100.104', probe: 'icmp', interval: 2.5, max: 250,
-      series: S({ seed: 41, base: 58, noise: 4, spikes: [[84, 231], [85, 188]] }), loss: [16, 43, 70, 97, 109], status: 'loss' },
+      series: S(U_DEST), loss: U_LOSS, status: 'loss' },
     { id: 'router', targetId: 1, host: '192.168.0.1', name: 'роутер', ip: '192.168.0.1', hopOf: 'one', hop: 1, probe: 'icmp', interval: 2.5, max: 2,
       series: S({ seed: 5, base: 0.6, noise: 0.3 }), partial: WT.sample(77, 0.64), status: 'partial' },
     { id: 'cgnat', targetId: 1, host: '100.64.10.1', name: 'isp-cgnat-1', ip: '100.64.10.1', hopOf: 'one', hop: 5, probe: 'icmp', interval: 2.5, max: 5,
@@ -113,7 +118,28 @@
     h.byProbe = { icmp: h.status };
     if (!h.series) { h.series = new Array(WT.N).fill(null); h.loss = []; h.partial = []; }
   });
-  function traceOf(host) { return host === '8.8.8.8' ? TRACE_G : TRACE; }
+  // A long route for the upwork row: the same home line and provider in Baku, then Tbilisi, Istanbul, Frankfurt and
+  // London, across the Atlantic to New York and Ashburn, where the target is (made-up documentation addresses). Every
+  // minimum passes the speed-of-light check from Baku; the map opens on Baku - London and points at the US part.
+  // Loss starts on the ocean crossing.
+  var TRACE_U = {
+    target: 'upwork', rounds: 240,
+    hops: [
+      { ttl: 1, addr: '192.168.1.1', status: 'ok', max: 5, series: band(201, 0.6, 0.9, 3.8), loss: [] },
+      { ttl: 2, addr: '100.64.0.1', status: 'ok', max: 10, series: band(202, 1.8, 2.3, 5.9), loss: [] },
+      { ttl: 3, addr: '198.51.100.17', name: 'bras1.bak.example.net', status: 'ok', max: 10, series: band(203, 2.4, 2.9, 7.2), loss: [] },
+      { ttl: 4, addr: '198.51.100.94', name: 'core2.bak.example.net', status: 'ok', max: 10, series: band(204, 2.8, 3.3, 8.4), loss: [] },
+      { ttl: 5, addr: '203.0.113.5', name: 'ge-0-1.tbs1.example.org', status: 'ok', max: 20, series: band(205, 9.4, 10.1, 15.3), loss: [] },
+      { ttl: 6, addr: '203.0.113.21', name: 'ae2.ist2.example.org', status: 'ok', max: 50, series: band(206, 31.2, 32.5, 40.6), loss: [] },
+      { ttl: 7, addr: '192.0.2.33', name: 'ae4.fra1.example.com', status: 'ok', max: 80, series: band(207, 52.1, 53.5, 63.8), loss: [] },
+      { ttl: 8, addr: '192.0.2.141', name: 'ae7.lon1.example.com', status: 'ok', max: 80, series: band(208, 58.3, 59.8, 71.2), loss: [] },
+      { ttl: 9, addr: '198.51.100.201', name: 'ae1.nyc1.example.net', status: 'loss', origin: true, max: 200, series: band(209, 127.9, 129.7, 146.0), loss: U_LOSS },
+      { ttl: 10, addr: '198.51.100.230', name: 'ae3.iad1.example.net', status: 'loss', max: 200, series: band(210, 130.4, 131.9, 149.5), loss: U_LOSS },
+      { ttl: 11, addr: '198.51.100.104', status: 'loss', dest: true, max: 250, series: S(U_DEST), loss: U_LOSS },
+    ],
+  };
+  TRACE_U.hops.forEach(function (h) { h.byProbe = { icmp: h.status }; });
+  function traceOf(host) { return host === '8.8.8.8' ? TRACE_G : host === 'www.upwork.com' ? TRACE_U : TRACE; }
 
   // Short path summary that every row carries (the core sends it with each target): route length, where the
   // loss starts, hops silent for this probe type, hops that answer only some probes, routers that say the
@@ -216,9 +242,16 @@
     '192.0.2.77': ['Frankfurt am Main', 'Hesse', 'DE', 50.11, 8.68, 64504, 'Transit DE'],
     '8.8.8.8': ['Mountain View', 'California', 'US', 37.39, -122.08, 15169, 'Google LLC'],
     '1.1.1.1': ['San Francisco', 'California', 'US', 37.77, -122.42, 13335, 'Cloudflare, Inc.'],
+    // the upwork row's long route
+    '203.0.113.21': ['Istanbul', 'Istanbul', 'TR', 41.01, 28.98, 64502, 'Transit TR'],
+    '192.0.2.33': ['Frankfurt am Main', 'Hesse', 'DE', 50.11, 8.68, 64504, 'Transit DE'],
+    '192.0.2.141': ['London', 'England', 'GB', 51.51, -0.13, 64510, 'Transit GB'],
+    '198.51.100.201': ['New York', 'New York', 'US', 40.71, -74.01, 64520, 'Transit US'],
+    '198.51.100.230': ['Ashburn', 'Virginia', 'US', 39.04, -77.49, 64520, 'Transit US'],
+    '198.51.100.104': ['Ashburn', 'Virginia', 'US', 39.04, -77.49, 64530, 'Demo hosting'],
   };
   var COUNTRY = { AZ: ['Azerbaijan', 'Азербайджан'], GE: ['Georgia', 'Грузия'], TR: ['Turkey', 'Турция'], US: ['United States', 'США'],
-    BG: ['Bulgaria', 'Болгария'], DE: ['Germany', 'Германия'] };
+    BG: ['Bulgaria', 'Болгария'], DE: ['Germany', 'Германия'], GB: ['United Kingdom', 'Великобритания'] };
   var GEO_NOW = '2026-10'; // the month of the mock's clock (END)
   var GEO0 = {
     month: FLAGS.indexOf('geo-none') >= 0 ? null : FLAGS.indexOf('geo-new') >= 0 ? '2026-09' : GEO_NOW,
@@ -318,11 +351,13 @@
       if (h === from) g.verdict = 'ok';
     });
   }
-  // The trace the core sends for a row: 1.1.1.1 rows get TRACE, the google row the demo route.
+  // The trace the core sends for a row: 1.1.1.1 rows get TRACE, the google row the demo route, the upwork row the
+  // long one.
   function traceFor(id) {
     var r = rows.filter(function (x) { return x.id === id; })[0];
     if (r && r.host === '1.1.1.1') return copy(TRACE);
     if (r && r.host === '8.8.8.8') return copy(TRACE_G);
+    if (r && r.host === 'www.upwork.com' && !r.hopOf) return copy(TRACE_U);
     return null;
   }
 
@@ -502,7 +537,7 @@
 
   function shift() {
     // Time goes on: every series moves one bucket left, the new bucket repeats a recent value.
-    rows.concat(TRACE.hops, TRACE_G.hops).forEach(function (r) {
+    rows.concat(TRACE.hops, TRACE_G.hops, TRACE_U.hops).forEach(function (r) {
       if (r.paused || !r.series) return;
       var v = r.series; v.push(v[v.length - 7]); v.shift();
       ['loss', 'partial'].forEach(function (k) { if (r[k]) r[k] = r[k].map(function (i) { return i - 1; }).filter(function (i) { return i >= 0; }); });
@@ -539,8 +574,8 @@
       if (window.MOCK.down) return; // a core that does not answer sends no rounds either
       if (++tick % 2 === 0) shift();
       googleRound();
-      // rounds of 1.1.1.1 and of 8.8.8.8 (the google row: the route map's demo route)
-      [1, 2].forEach(function (tid) { (listeners.round || []).forEach(function (cb) { cb(tid); }); });
+      // rounds of 1.1.1.1, of 8.8.8.8 (the google row: the route map's demo route) and of the upwork row (the long one)
+      [1, 2, 4].forEach(function (tid) { (listeners.round || []).forEach(function (cb) { cb(tid); }); });
     }, 2500);
   }
 

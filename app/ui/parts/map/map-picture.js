@@ -1,7 +1,8 @@
 // Whilo Trace, route map: the «Сохранить картинку» dialog (MAP.picture(host), opened from the map's head). The
 // picture is for publication: the map with its callouts and the hop ribbon, always dark, your network and your
-// provider's first hops hidden (MAP.png in parts/map/map.js), 1200×675 (the ribbon right of the map) or 1080×1080 (the
-// ribbon under it). The preview is the very picture that is saved. «Сохранить» writes it with save_image (flat
+// provider's first hops hidden (MAP.png in parts/map/map.js), laid out at 1200×675 (the ribbon right of the map) or
+// 1080×1080 (the ribbon under it) and drawn at 2×: the size switch says the file's pixels (MAP.pngSize), 2400×1350 or
+// 2160×2160. The preview is the very picture that is saved. «Сохранить» writes it with save_image (flat
 // arguments {dir, name, pngBase64}, docs/ui-contract.md) into the reports' folder, Documents\Whilo Trace, or the one
 // picked with «Изменить…» (pick_folder); then «Открыть папку» (open_folder). The shell is the report dialog's (.ms,
 // .ms-scrim, .rp of parts/history/he.css), centred (map.css). While open it takes Esc, keeps Tab inside and then
@@ -20,7 +21,8 @@
     folder: svg('<path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.7l1.5 1.6h4.8A1.5 1.5 0 0 1 14 6.1v5.4a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z"/>'),
     check: svg('<path d="M3.5 8.5l3 3 6-7"/>'),
   };
-  var SIZES = [['wide', '1200×675'], ['square', '1080×1080']];
+  // the layouts and the size of their files in pixels
+  var SIZES = ['wide', 'square'].map(function (k) { var px = MAP.pngSize(k); return [k, px[0] + '×' + px[1]]; });
   function two(x) { return (x < 10 ? '0' : '') + x; }
   // whilo-trace-map-8.8.8.8-20261027-160000: the target and the end of the data's window, local time (the core
   // cleans the name again and adds -2, -3 when the file is there). A destination of your network typed as an address
