@@ -23,7 +23,7 @@ use whilo_trace_engine::monitor::resolve_v4;
 use whilo_trace_engine::sim::SimNet;
 use whilo_trace_engine::stats::LOSS_NOTABLE_PCT;
 use whilo_trace_engine::{
-    hop_stats, now_ms, spawn_monitor_with, timeline, verdict, Bucket, HopStats, HopStatus,
+    hop_stats_toward, now_ms, spawn_monitor_with, timeline, verdict, Bucket, HopStats, HopStatus,
     MonitorConfig, MonitorEvent, MonitorHandle, MonitorOptions, ProbeKind, Prober, ProberFactory,
     Resolver, RoundRecord, Verdict,
 };
@@ -669,6 +669,40 @@ struct TargetInfo {
     data: Arc<Mutex<TargetData>>,
 }
 
+/// The route over the buckets `range` of a window, from its hops over those buckets.
+fn path_summary(core: &Core, w: &Window, hops: &[HopInfo], range: Range<usize>) -> PathSummary {
+    PathSummary {
+        hops: w.dest_ttl_in(range.clone()).unwrap_or(0),
+        origin: hops.iter().find(|h| h.loss_origin).map(|h| HopRef {
+            ttl: h.ttl,
+            addr: h.addr.map(|a| a.to_string()),
+        }),
+        silent: hops
+            .iter()
+            .filter(|h| h.status == HopStatus::Silent)
+            .map(|h| h.ttl)
+            .collect(),
+        partial: hops
+            .iter()
+            .filter(|h| h.status == HopStatus::RateLimited)
+            .map(|h| PartialHop {
+                ttl: h.ttl,
+                addr: h.addr.map(|a| a.to_string()),
+                name: h.addr.and_then(|a| core.net.dns.name(a)),
+                no_reply_pct: r3(w.stats(Pick::Hop(h.ttl), range.clone()).no_reply_pct()),
+            })
+            .collect(),
+        unreachable: hops
+            .iter()
+            .filter(|h| h.status == HopStatus::Unreachable)
+            .map(|h| HopRef {
+                ttl: h.ttl,
+                addr: h.addr.map(|a| a.to_string()),
+            })
+            .collect(),
+    }
+}
+
 fn compute(
     core: &Core,
     t: &TargetInfo,
@@ -689,36 +723,10 @@ fn compute(
         Ok(ip) => core.net.dns.name(ip),
         Err(_) => dst.map(|ip| ip.to_string()),
     };
-    let path = PathSummary {
-        hops: w.dest_ttl().unwrap_or(0),
-        origin: hops.iter().find(|h| h.loss_origin).map(|h| HopRef {
-            ttl: h.ttl,
-            addr: h.addr.map(|a| a.to_string()),
-        }),
-        silent: hops
-            .iter()
-            .filter(|h| h.status == HopStatus::Silent)
-            .map(|h| h.ttl)
-            .collect(),
-        partial: hops
-            .iter()
-            .filter(|h| h.status == HopStatus::RateLimited)
-            .map(|h| PartialHop {
-                ttl: h.ttl,
-                addr: h.addr.map(|a| a.to_string()),
-                name: h.addr.and_then(|a| core.net.dns.name(a)),
-                no_reply_pct: r3(w.stats(Pick::Hop(h.ttl), w.all()).no_reply_pct()),
-            })
-            .collect(),
-        unreachable: hops
-            .iter()
-            .filter(|h| h.status == HopStatus::Unreachable)
-            .map(|h| HopRef {
-                ttl: h.ttl,
-                addr: h.addr.map(|a| a.to_string()),
-            })
-            .collect(),
-    };
+    let path = path_summary(core, w, &hops, w.all());
+    let range_path = period
+        .as_ref()
+        .map(|p| path_summary(core, w, &p.hops, p.buckets.clone()));
     let row = Row {
         id: target_row_id(t.id),
         target_id: t.id,
@@ -743,6 +751,7 @@ fn compute(
         stats: dest.stats,
         range_stats: dest.range_stats,
         path: Some(path),
+        range_path,
     };
     let pin_rows = pins
         .iter()
@@ -778,6 +787,7 @@ fn compute(
                 stats: d.stats,
                 range_stats: d.range_stats,
                 path: None,
+                range_path: None,
             };
             (*pid, row)
         })
@@ -1294,6 +1304,8 @@ impl Core {
     /// Writes the report into a new folder under `req.dir`, or under `<docs>/Whilo Trace`.
     fn export(&self, req: ReportReq, docs: Option<PathBuf>) -> Result<ExportRes, String> {
         let (from_ms, to_ms) = (req.from_ms.min(req.to_ms), req.from_ms.max(req.to_ms));
+        // A live window ends with its bucket, later than now: the report ends when it is made.
+        let to_ms = to_ms.min(now_ms());
         if to_ms <= from_ms {
             return Err("io: empty period".into());
         }
@@ -1329,19 +1341,46 @@ impl Core {
                 (t.host.clone(), t.probe, t.interval_s, t.data.clone())
             };
             let rounds = self.rounds_of(&data, tid, from_ms, to_ms)?;
-            let hops = hop_stats(&rounds);
+            // No round reached the destination in the period: it is where the nearest round
+            // found it, as the screen takes it from the window.
+            let toward = if rounds.iter().any(|r| r.reached) {
+                None
+            } else {
+                lock(&self.reader)
+                    .dest_ttl_near(tid, from_ms, to_ms)
+                    .map_err(db)?
+            };
+            let hops = hop_stats_toward(&rounds, toward);
             let v = verdict(&rounds, &hops);
+            // What the rounds of the period did: the interval may have changed since.
+            let interval_s = report::round_interval_s(&rounds, interval_s);
             let n = report::bucket_count(to_ms - from_ms, interval_s, 300);
-            let line = timeline(&rounds, None, from_ms, to_ms, n);
+            let line = timeline(&rounds, None, from_ms, to_ms, n, None);
             let pinned = ttls
                 .into_iter()
                 .map(|ttl| {
-                    let addr = hops.iter().find(|h| h.ttl == ttl).and_then(|h| h.addr);
+                    let info = hops.iter().find(|h| h.ttl == ttl);
+                    // A hop that kept silent in the period is known by who answered when pinned.
+                    let addr = info.and_then(|h| h.addr).or_else(|| {
+                        lock(&self.pins)
+                            .values()
+                            .find(|p| p.target_id == tid && p.ttl == ttl)
+                            .and_then(|p| p.addr.as_ref())
+                            .and_then(|a| a.parse().ok())
+                    });
+                    let mut line = timeline(&rounds, Some(ttl), from_ms, to_ms, n, toward);
+                    // The misses of a silent hop say nothing about the path, as on the screen.
+                    if info.is_some_and(|h| h.status == HopStatus::Silent) {
+                        for b in &mut line {
+                            b.lost = 0;
+                            b.no_reply = 0;
+                        }
+                    }
                     PinnedLine {
                         ttl,
                         addr,
                         name: addr.and_then(|a| self.net.dns.name(a)),
-                        timeline: timeline(&rounds, Some(ttl), from_ms, to_ms, n),
+                        timeline: line,
                     }
                 })
                 .collect();
@@ -1628,14 +1667,27 @@ fn set_background(window: tauri::WebviewWindow, dark: bool) -> Result<(), String
 }
 
 fn main() {
-    tauri::Builder::default()
+    let simulate = simulate_value(std::env::var_os("WHILO_TRACE_SIMULATE").as_deref());
+    let mut builder = tauri::Builder::default();
+    // A second copy would probe every target twice, and a pause in one window would not stop the
+    // other: it brings up the first window instead. The simulated network sends nothing and has
+    // a history of its own, so it may run next to the real app.
+    if !simulate {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }));
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
+        .setup(move |app| {
             let handle = app.handle().clone();
             let notify: Notify = Arc::new(move |id| {
                 let _ = handle.emit("round", id);
             });
-            let simulate = simulate_value(std::env::var_os("WHILO_TRACE_SIMULATE").as_deref());
             let core = if simulate {
                 let db_path = simulated_db_path(default_db_path());
                 Core::open_net(db_path, notify, Net::simulated(SimNet::new()))?
@@ -1891,6 +1943,105 @@ mod tests {
             trace: None,
             buckets: 120,
         }
+    }
+
+    /// A report over an outage: no round of the period reached the destination. The table, the
+    /// pinned hop and the screen over the same period still know where it is.
+    #[test]
+    fn a_report_over_an_outage_knows_where_the_destination_is() {
+        let dir = temp_dir("outage");
+        let db_path = dir.0.join("history.db");
+        let now = now_ms();
+        let out_from = now - 120_000;
+        let ip = Ipv4Addr::new(10, 0, 0, 5);
+        {
+            let mut s = Store::open(&db_path).unwrap();
+            let a = s.add_target("10.0.0.5").unwrap();
+            s.set_paused(a, true).unwrap();
+            // A path of 5; for the last two minutes nothing past hop 2, kept as the monitor
+            // keeps it: one silent slot after the last answer.
+            for k in 0..240 {
+                let ts = now - 600_000 + k * 2500;
+                let r = if ts < out_from {
+                    round(ts, &[true; 5], ip)
+                } else {
+                    let mut r = round(ts, &[true, true, false, false, false], ip);
+                    r.hops.truncate(3);
+                    r.path_len = 3;
+                    r
+                };
+                s.insert_round(a, &r).unwrap();
+            }
+            s.pin_hop(a, 4, "icmp", Some("10.0.4.1")).unwrap();
+        }
+        let probes = Arc::new(AtomicUsize::new(0));
+        let core = Core::open_with(
+            db_path.clone(),
+            Arc::new(|_| {}),
+            Some(fake_backend(&probes)),
+        )
+        .unwrap();
+        core.start_saved().unwrap();
+        let data = lock(&core.targets).values().next().unwrap().data.clone();
+        wait_for(20, "history did not load", || lock(&data).hist.len() >= 240);
+
+        let res = core
+            .export(
+                ReportReq {
+                    rows: vec!["t1".into(), "p1".into()],
+                    from_ms: out_from,
+                    to_ms: now,
+                    formats: vec!["html".into(), "csv".into(), "json".into()],
+                    tz_offset_min: 0,
+                    findings: Vec::new(),
+                    png_base64: None,
+                    dir: Some(dir.0.display().to_string()),
+                    map_png_base64: None,
+                },
+                None,
+            )
+            .unwrap();
+        let folder = PathBuf::from(&res.dir);
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(folder.join("report.json")).unwrap())
+                .unwrap();
+        let target = &json["targets"][0];
+        let hops = target["hops"].as_array().unwrap();
+        assert_eq!(hops.len(), 5, "as many rows as on the screen");
+        assert_eq!(hops[4]["is_destination"], true);
+        assert_eq!(
+            hops[2]["is_destination"], false,
+            "not the hop of the outage"
+        );
+        assert_eq!(target["verdict"]["dest_ttl"], 5);
+        assert_eq!(target["verdict"]["dest_loss_pct"], 100.0);
+        let csv = std::fs::read_to_string(folder.join("hops.csv")).unwrap();
+        assert_eq!(csv.lines().count(), 6, "{csv}");
+        let pinned = &target["pinned"][0];
+        assert_eq!(pinned["address"], "10.0.4.1");
+        let line = pinned["timeline"].as_array().unwrap();
+        let lost: u64 = line.iter().map(|b| b["lost"].as_u64().unwrap()).sum();
+        assert!(lost >= 40, "rounds of the outage are lost at hop 4: {lost}");
+
+        // On the screen, a period inside the outage (the picked range snaps to 5 s buckets):
+        // statuses and the path summary are of the period, not of the window.
+        let mut r = req("10m", None);
+        r.trace = Some("t1".into());
+        r.range = Some([out_from + 10_000, now]);
+        let snap = core.snapshot(&r).unwrap();
+        let row = &snap.targets[0];
+        let whole = row.path.as_ref().unwrap();
+        let period = row.range_path.as_ref().unwrap();
+        assert_eq!(period.hops, whole.hops);
+        assert_eq!(whole.origin.as_ref().map(|o| o.ttl), Some(3));
+        assert!(
+            period.origin.is_none(),
+            "nothing answers past hop 2: {period:?}"
+        );
+        let hops = snap.trace.unwrap().hops;
+        assert_eq!(hops.len(), 5);
+        assert!(hops[4].dest);
+        shut_down(core);
     }
 
     /// Saved history in, snapshots and a report out: the commands without the window.

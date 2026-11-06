@@ -237,6 +237,8 @@
     }
     if (known(s.avg)) return '';
     var per = c.range || c.past ? { ru: 'за этот период', en: 'in this period' } : { ru: 'за ' + c.win.ru, en: 'in ' + c.win.en };
+    // It answers every probe, and such answers carry no latency.
+    if (stKey(t, c) === 'unreachable' && s.sent > 0) return tx('ответы без задержки', 'answers carry no latency');
     if (s.lossPct > 0 || s.sent > 0) return tx('нет ответов ' + per.ru, 'no replies ' + per.en);
     return tx('нет данных ' + per.ru, 'no data ' + per.en);
   }

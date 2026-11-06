@@ -105,6 +105,9 @@ pub struct Row {
     pub range_stats: Option<Stats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<PathSummary>,
+    /// `path` over the picked period: only on a target row with `rangeStats`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_path: Option<PathSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]

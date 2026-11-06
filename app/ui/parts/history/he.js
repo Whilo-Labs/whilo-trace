@@ -26,6 +26,7 @@
   }
   function n1(v, en) { var s = WT.fmt(v); return en ? s.replace(',', '.') : s; }
   function pc(v, en) { return (v ? n1(v, en) : '0') + (en ? '%' : NB + '%'); }
+  function pcLoss(v, en) { return WT.lossNum(v, en) + (en ? '%' : NB + '%'); }
   function msTxt(v, en) { return n1(v, en) + (en ? ' ms' : NB + 'мс'); }
   function nInt(v, en) { return String(Math.round(v)).replace(/\B(?=(\d{3})+(?!\d))/g, en ? ',' : NB); }
   function ruN(n, one, few, many) {
@@ -794,17 +795,20 @@
   // Findings in plain words from the numbers (stats) and the path summary (t.path), [ru, en].
   // Main screen: one line per target and probe type; trace screen: a paragraph per probe type.
   function finding(t, s, n, full) {
-    var head = full ? '' : t.host + ', ' + probeLabel(t) + ': ', p = t.path || {}, lossy = s && s.lossPct > 0;
+    // Numbers and route of the same period: s is rangeStats when the report is for a picked period.
+    var head = full ? '' : t.host + ', ' + probeLabel(t) + ': ', p = (s && s === t.rangeStats && t.rangePath) || t.path || {}, lossy = s && s.lossPct > 0;
     if (!n) return full ? ['За этот период данных нет.', 'No data for this period.'] : [head + 'за этот период данных нет.', head + 'no data for this period.'];
     var r = cnt(n, ['раунд', 'раунда', 'раундов'], ['round', 'rounds']), o = lossy && p.origin ? p.origin : null;
+    var atDest = !!o && o.ttl === p.hops; // the loss shows up only at the destination
     if (!full) {
       if (!lossy) return [head + 'потерь до цели нет за ' + r[0] + '.', head + 'no loss to the destination over ' + r[1] + '.'];
-      return [head + 'потери до цели ' + pc(s.lossPct, false) + ' за ' + r[0] + (o ? ', начинаются на хопе ' + o.ttl + atAddr(o) : '') + '.',
-        head + pc(s.lossPct, true) + ' loss to the destination over ' + r[1] + (o ? ', starting at hop ' + o.ttl + atAddr(o) : '') + '.'];
+      return [head + 'потери до цели ' + pcLoss(s.lossPct, false) + ' за ' + r[0] + (atDest ? ', появляются только на цели' : o ? ', начинаются на хопе ' + o.ttl + atAddr(o) : '') + '.',
+        head + pcLoss(s.lossPct, true) + ' loss to the destination over ' + r[1] + (atDest ? ', showing up only at the destination' : o ? ', starting at hop ' + o.ttl + atAddr(o) : '') + '.'];
     }
-    var ru = [lossy ? 'Потери до цели ' + pc(s.lossPct, false) + ' за ' + r[0] + '.' : 'Потерь до цели нет за ' + r[0] + '.'];
-    var en = [lossy ? pc(s.lossPct, true) + ' loss to the destination over ' + r[1] + '.' : 'No loss to the destination over ' + r[1] + '.'];
-    if (o) { ru.push('Потери начинаются на хопе ' + o.ttl + atAddr(o) + ' и продолжаются до цели.'); en.push('Loss starts at hop ' + o.ttl + atAddr(o) + ' and carries on to the destination.'); }
+    var ru = [lossy ? 'Потери до цели ' + pcLoss(s.lossPct, false) + ' за ' + r[0] + '.' : 'Потерь до цели нет за ' + r[0] + '.'];
+    var en = [lossy ? pcLoss(s.lossPct, true) + ' loss to the destination over ' + r[1] + '.' : 'No loss to the destination over ' + r[1] + '.'];
+    if (atDest) { ru.push('Потери появляются только на цели.'); en.push('Loss shows up only at the destination.'); }
+    else if (o) { ru.push('Потери начинаются на хопе ' + o.ttl + atAddr(o) + ' и продолжаются до цели.'); en.push('Loss starts at hop ' + o.ttl + atAddr(o) + ' and carries on to the destination.'); }
     (p.unreachable || []).forEach(function (h) { ru.push('Хоп ' + h.ttl + atAddr(h) + ' сообщает, что цель недоступна.'); en.push('Hop ' + h.ttl + atAddr(h) + ' says the destination is unreachable.'); });
     var sil = p.silent || [], label = probeLabel(t);
     if (sil.length === 1) { ru.push('Хоп ' + sil[0] + ' не отвечает на ' + label + ', хопы дальше отвечают.'); en.push('Hop ' + sil[0] + ' does not answer ' + label + '; later hops do.'); }
@@ -962,7 +966,9 @@
       if (!seen[key]) { seen[key] = 1; hosts.push(own.host); }
     });
     var base = hosts.length === 1 ? hosts[0].replace(/[^A-Za-z0-9.-]/g, '_') : 'whilo-trace';
-    return base + '-' + stamp(r[1], o.tz);
+    // The core marks a report of the simulated network and ends the period no later than now.
+    var sim = WT.geo && WT.geo.state === 'simulated' ? '-simulated' : '';
+    return base + sim + '-' + stamp(Math.min(r[1], Date.now()), o.tz);
   }
   function pathOf(o) {
     var name = folderName(o);

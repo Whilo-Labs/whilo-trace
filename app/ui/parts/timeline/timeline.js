@@ -337,7 +337,8 @@
     }
     var s = WT.statuses[k], p = probeOf(tr.probe).label, hop = !!(tr.src && tr.src.hopOf);
     var hr = !hop && s.hint_target_ru ? s.hint_target_ru : s.hint_ru || '', he = !hop && s.hint_target_en ? s.hint_target_en : s.hint_en || '';
-    var hint = k === 'loss' && !hop ? '' : (EN ? he : hr).replace('{probe}', p);
+    // No hint «no loss» next to loss under the threshold, as in the summary.
+    var hint = (k === 'loss' && !hop) || (k === 'ok' && tr.src && WT.stats(tr.src).lossPct > 0) ? '' : (EN ? he : hr).replace('{probe}', p);
     name = L(s.ru, s.en).replace('{probe}', p);
     // next to the «paused» chip a long status may be cut short (timeline.css): its hint starts with the full name
     if (pz && hint) hint = name.charAt(0).toUpperCase() + name.slice(1) + '. ' + hint;
@@ -468,7 +469,8 @@
       return { silent: S(st.ru.replace('{probe}', p), st.en.replace('{probe}', p)), mk: 'silent' };
     }
     var v = vals(s)[i], lost = !!setOf(s.loss)[i], part = !lost && !!setOf(s.partial)[i];
-    var lat = ok(v) ? MS(v, 'v num') : lost || part ? S('нет ответа', 'no reply', 'v') : S('нет данных', 'no data', 'v');
+    var answered = tr.status === 'unreachable' && s.sentN && s.sentN[i] > 0; // such answers carry no latency
+    var lat = ok(v) ? MS(v, 'v num') : lost || part ? S('нет ответа', 'no reply', 'v') : answered ? S('ответ без задержки', 'answer without latency', 'v') : S('нет данных', 'no data', 'v');
     if (!lost && !part && !ok(v)) return { lat: lat, lk: null, lv: '' };
     var c = countsAt(s, i, lost || part, v);
     function share(k) { return k == null ? S('часть из ' + c.n, 'some of ' + c.n) : S(k + ' из ' + c.n, k + ' of ' + c.n); }

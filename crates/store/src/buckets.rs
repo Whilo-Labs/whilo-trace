@@ -416,7 +416,8 @@ impl<'a> Window<'a> {
         self.dest_ttl_in(self.all())
     }
 
-    fn dest_ttl_in(&self, r: Range<usize>) -> Option<u8> {
+    /// `dest_ttl` over the buckets `r`.
+    pub fn dest_ttl_in(&self, r: Range<usize>) -> Option<u8> {
         self.toward_in(r.clone()).or_else(|| {
             most_seen(
                 self.slots_in(r)
@@ -579,12 +580,20 @@ impl<'a> Window<'a> {
 /// Mirrors the classification of `whilo_trace_engine::stats` on window totals: loss at a hop
 /// counts only when it carries on to the hops after it. Kept in step by a test against `hop_stats`.
 fn classify(rows: &mut [(HopInfo, f64)]) {
+    let dest_row = rows.iter().rposition(|(r, _)| r.is_destination);
     let statuses: Vec<HopStatus> = (0..rows.len())
         .map(|i| {
             let (row, loss) = &rows[i];
             let later = &rows[i + 1..];
             let later_alive = later.iter().any(|(r, _)| r.recv > 0);
-            let later_min_loss = later
+            // A row past the destination has only the few rounds that went that deep and none
+            // of the lost ones, so its low loss does not mean the loss stopped.
+            let carried = match dest_row {
+                Some(d) if i < d => &rows[i + 1..=d],
+                Some(_) => &[],
+                None => later,
+            };
+            let later_min_loss = carried
                 .iter()
                 .filter(|(r, _)| r.recv > 0)
                 .map(|(_, l)| *l)
@@ -612,19 +621,17 @@ fn classify(rows: &mut [(HopInfo, f64)]) {
     for ((row, _), status) in rows.iter_mut().zip(statuses) {
         row.status = status;
     }
-    let Some(dest) = rows.iter().rposition(|(r, _)| r.is_destination) else {
+    let Some(dest) = dest_row else {
         return;
     };
     if rows[dest].0.status != HopStatus::Lossy {
         return;
     }
-    let dest_loss = rows[dest].1;
     let mut origin = dest;
     for j in (0..dest).rev() {
         match rows[j].0.status {
             HopStatus::Lossy | HopStatus::Unreachable => origin = j,
-            HopStatus::RateLimited if rows[j].1 >= dest_loss => origin = j,
-            HopStatus::Silent => {}
+            HopStatus::Silent | HopStatus::RateLimited => {}
             _ => break,
         }
     }

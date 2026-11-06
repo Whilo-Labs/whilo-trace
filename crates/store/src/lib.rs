@@ -188,6 +188,34 @@ impl Store {
         Ok(id)
     }
 
+    /// The target the command line watches. It does not touch what the app probes: a target that
+    /// exists stays as it is (removed or paused), a new one comes in as removed, with its history
+    /// kept here for reports and for the day it is added in the app.
+    pub fn watch_target(&self, host: &str) -> Result<i64> {
+        let tx = self.conn.unchecked_transaction()?;
+        let found: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM targets WHERE host = ?1 COLLATE NOCASE ORDER BY id LIMIT 1",
+                [host],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let id = match found {
+            Some(id) => id,
+            None => {
+                let pos = next_position(&tx)?;
+                tx.execute(
+                    "INSERT INTO targets (host, active, created_ms, position, interval_ms, paused, probe)
+                     VALUES (?1, 0, ?2, ?3, ?4, 0, 'icmp')",
+                    params![host, now_ms(), pos, DEFAULT_INTERVAL_MS],
+                )?;
+                tx.last_insert_rowid()
+            }
+        };
+        tx.commit()?;
+        Ok(id)
+    }
+
     /// Stops a target without deleting its history.
     pub fn set_active(&self, id: i64, active: bool) -> Result<()> {
         self.conn.execute(
@@ -468,6 +496,32 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// The TTL of the destination around a period none of whose rounds reached it: where the
+    /// nearest round that did ended, up to a day away, looking before the period first.
+    pub fn dest_ttl_near(&self, target_id: i64, from_ms: i64, to_ms: i64) -> Result<Option<u8>> {
+        const DAY_MS: i64 = 86_400_000;
+        let before = self
+            .conn
+            .prepare_cached(
+                "SELECT path_len FROM rounds
+                 WHERE target_id = ?1 AND ts_ms >= ?2 AND ts_ms < ?3 AND reached = 1
+                 ORDER BY ts_ms DESC LIMIT 1",
+            )?
+            .query_row(params![target_id, from_ms - DAY_MS, from_ms], |r| r.get(0))
+            .optional()?;
+        if before.is_some() {
+            return Ok(before);
+        }
+        self.conn
+            .prepare_cached(
+                "SELECT path_len FROM rounds
+                 WHERE target_id = ?1 AND ts_ms >= ?2 AND ts_ms < ?3 AND reached = 1
+                 ORDER BY ts_ms LIMIT 1",
+            )?
+            .query_row(params![target_id, to_ms, to_ms + DAY_MS], |r| r.get(0))
+            .optional()
     }
 
     /// Start times of the rounds that did not reach the destination, oldest first.

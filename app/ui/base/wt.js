@@ -128,6 +128,12 @@
 
   // Numbers in Russian style: decimal comma, whole numbers from 10 up.
   function fmt(n) { return n >= 10 ? String(Math.round(n)) : n.toFixed(1).replace('.', ','); }
+  // The number of a loss share in a sentence: a tiny share does not read as 0, one just under all does not read as 100.
+  function lossNum(n, en) {
+    var s = n > 0 && n < 0.05 ? (en ? 'under 0,1' : 'меньше 0,1')
+      : n >= 99.5 && n < 100 ? (Math.floor(n * 10) / 10).toFixed(1).replace('.', ',') : n ? fmt(n) : '0';
+    return en ? s.replace(',', '.') : s;
+  }
 
   // Window statistics for a target or a hop: loss %, avg, min, max, last, jitter.
   // The Rust core sends them ready in t.stats; the formula below is for the mock and for old callers.
@@ -178,6 +184,6 @@
     settings: { warnMs: 100, badMs: 200, theme: 'system', lang: 'ru', window: '10m', geoCheck: true, home: null },
     probesAvailable: ['icmp'],
     path: { line: line, bars: bars, zone: zone, jitter: jitter, hatch: hatch },
-    stats: stats, fmt: fmt, apply: apply, ticksAt: ticksAt,
+    stats: stats, fmt: fmt, lossNum: lossNum, apply: apply, ticksAt: ticksAt,
   };
 })();

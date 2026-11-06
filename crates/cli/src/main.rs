@@ -8,8 +8,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use whilo_trace_engine::dns::DnsCache;
 use whilo_trace_engine::{
-    hop_stats, now_ms, spawn_monitor, timeline, verdict, HopStats, MonitorConfig, MonitorEvent,
-    ProbeKind, RoundRecord,
+    hop_stats, hop_stats_toward, now_ms, spawn_monitor, timeline, verdict, HopStats, MonitorConfig,
+    MonitorEvent, ProbeKind, RoundRecord,
 };
 use whilo_trace_store::report::{self, fmt_ms, status_label, Report};
 use whilo_trace_store::{default_db_path, Store};
@@ -88,12 +88,12 @@ struct ProbeArgs {
 impl ProbeArgs {
     fn config(&self, host: &str) -> MonitorConfig {
         MonitorConfig {
-            host: host.to_string(),
             interval: Duration::from_secs_f64(self.interval.max(0.2)),
             timeout: Duration::from_millis(self.timeout_ms),
             max_ttl: self.max_ttl,
             payload: self.payload,
             send_gap: Duration::from_millis(self.send_gap_ms),
+            ..MonitorConfig::new(host)
         }
     }
 }
@@ -153,7 +153,7 @@ fn watch(
     let mut monitors = Vec::new();
     for (i, host) in hosts.iter().enumerate() {
         let id = match &store {
-            Some(s) => Some(s.add_target(host)?),
+            Some(s) => Some(s.watch_target(host)?),
             None => None,
         };
         watched.push(Watched {
@@ -359,25 +359,26 @@ fn export(
     if rounds.is_empty() {
         return Err(format!("no rounds for {host} in the last {last}").into());
     }
-    let hops = hop_stats(&rounds);
+    // No round reached the destination in the period: it is where the nearest round found it.
+    let toward = if rounds.iter().any(|r| r.reached) {
+        None
+    } else {
+        store.dest_ttl_near(target.id, from_ms, to_ms)?
+    };
+    let hops = hop_stats_toward(&rounds, toward);
     let v = verdict(&rounds, &hops);
     let names: Vec<Option<String>> = hops
         .iter()
         .map(|h| h.addr.and_then(dns_lookup_blocking))
         .collect();
-    let interval_s = if rounds.len() > 1 {
-        (rounds[rounds.len() - 1].ts_ms - rounds[0].ts_ms) as f64
-            / 1000.0
-            / (rounds.len() - 1) as f64
-    } else {
-        0.0
-    };
+    let interval_s = report::round_interval_s(&rounds, 0.0);
     let line = timeline(
         &rounds,
         None,
         from_ms,
         to_ms,
         report::bucket_count(to_ms - from_ms, interval_s, 240),
+        None,
     );
     let r = Report {
         host: &target.host,

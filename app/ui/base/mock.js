@@ -222,7 +222,10 @@
     t.sentN = roundsIn(interval, from, bucket);
     t.lostN = lostIn(t, t.sentN);
     t.stats = statsIn(t, 0, WT.N - 1);
-    if (idx) { t.rangeStats = statsIn(t, idx[0], idx[1]); t.rangeStats.status = rangeStatus(t, t.rangeStats); }
+    if (idx) {
+      t.rangeStats = statsIn(t, idx[0], idx[1]); t.rangeStats.status = rangeStatus(t, t.rangeStats);
+      if (t.path) t.rangePath = t.path; // the scenario has one route for the whole window
+    }
   }
   function toIdx(ms, from, bucket) { return Math.max(0, Math.min(WT.N - 1, Math.floor((ms - from) / bucket))); }
 

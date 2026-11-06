@@ -250,19 +250,18 @@
     });
     // Where the loss starts: the core marks it for the window; for a picked period the engine rule runs here:
     // from the destination back while the loss carries on, through a router that says the destination is
-    // unreachable and one that misses no less than the destination; silent hops do not count.
+    // unreachable; a silent router or one that limits its answers tells nothing and is passed over.
     if (main && !idx && tr.hops.some(function (hp) { return 'origin' in hp; })) {
       hops.forEach(function (h, i) { h.origin = !!tr.hops[i].origin; });
     } else {
       var di = hops.length - 1;
       hops.forEach(function (h, i) { if (h.dest) di = i; });
       if (hops[di] && hops[di].status === 'loss') {
-        var oi = di, dl = hops[di].s ? hops[di].s.lossPct : 0;
+        var oi = di;
         for (var j = di - 1; j >= 0; j--) {
-          var hj = hops[j];
-          if (hj.status === 'loss' || hj.status === 'unreachable') oi = j;
-          else if (hj.status === 'partial' && hj.s && hj.s.lossPct + hj.s.noReplyPct >= dl) oi = j;
-          else if (hj.status !== 'silent') break;
+          var hj = hops[j].status;
+          if (hj === 'loss' || hj === 'unreachable') oi = j;
+          else if (hj !== 'silent' && hj !== 'partial') break;
         }
         hops[oi].origin = true;
       }
@@ -385,8 +384,9 @@
       out += '<p class="tr-lead">' + mk('loss') + '<strong>' +
         S('Цель не ответила ни на одну пробу ' + per.ru + ' (' + rp.ru + ').', 'The destination did not answer any probe ' + per.en + ' (' + rp.en + ').') + '</strong></p>';
     } else if (s.lossPct > 0) {
-      var lp = pr(s.lossPct);
-      out += '<p class="tr-lead">' + mk('loss') + '<strong>' +
+      var lp = { ru: WT.lossNum(s.lossPct, false) + ' %', en: WT.lossNum(s.lossPct, true) + '%' };
+      // Red as the row's status: under the loss threshold it is «в норме».
+      out += '<p class="tr-lead">' + mk(periodStatus(m.target.status, s) === 'loss' ? 'loss' : 'ok') + '<strong>' +
         S('Потери до цели ' + lp.ru + ' ' + per.ru + ' (' + rp.ru + ').', 'Loss to the destination: ' + lp.en + ' ' + per.en + ' (' + rp.en + ').') +
         '</strong>' + avg + '</p>';
     } else {
@@ -415,7 +415,12 @@
           (o.addr ? S(' (', ' (') + ip(o.addr) + S(') и продолжаются до цели.', ') and carries on to the destination.')
                   : S(' и продолжаются до цели.', ' and carries on to the destination.')));
       } else if (o && o === dest) {
-        items += li('loss', S('Потери появляются только на цели, хопы до нее отвечают без потерь.', 'Loss shows up only at the destination; the hops before it answer without loss.'));
+        var clean = m.hops.every(function (h) { return h === dest || h.status === 'ok' || h.status === 'silent'; });
+        items += li('loss', clean
+          ? S('Потери появляются только на цели, хопы до нее отвечают без потерь.', 'Loss shows up only at the destination; the hops before it answer without loss.')
+          : S('Потери появляются только на цели.', 'Loss shows up only at the destination.'));
+      } else if (!o && s.lossPct >= LOSS_NOTABLE_PCT) {
+        items += li('loss', S('Где они начинаются, по хопам не определить.', 'Where it starts cannot be told from the hops.'));
       }
     }
     un.forEach(function (h) {
@@ -433,9 +438,9 @@
     }
     m.hops.filter(function (h) { return h.status === 'partial'; }).forEach(function (h) {
       var nm = nameP(h.name), name = nm ? S(' (' + nm.ru + ')', ' (' + nm.en + ')') : '';
-      if (h.s) {
-        // The same share as in grey in the Loss column of the hop table and the summary: «61 % без ответа».
-        var nr = pr(h.s.noReplyPct), idx = m.hops.indexOf(h);
+      if (h.s && h.s.noReplyPct + h.s.lossPct > 0) {
+        // All its misses, in the rounds where the destination answered and where it did not.
+        var nr = pr(h.s.noReplyPct + h.s.lossPct), idx = m.hops.indexOf(h);
         var next = m.hops.slice(idx + 1).filter(function (x) { return x.status === 'ok' && x.s && x.s.lossPct === 0 && !x.s.noReplyPct; })[0];
         items += li('partial', HL(h.ttl, 'Хоп ' + h.ttl, 'Hop ' + h.ttl) + name +
           S(' не ответил на ' + nr.ru + ' проб', ' did not answer ' + nr.en + ' of probes') +
@@ -549,9 +554,12 @@
     var p = stP(h.status, m.probe, h.dest);
     var lab = h.origin ? { ru: WT.statuses.origin.ru, en: WT.statuses.origin.en } : p;
     var tip = L(p.hru, p.hen);
-    if (h.status === 'partial' && h.s) {
+    // «В норме» with loss under the threshold: the numbers instead of «no loss».
+    var under = h.status === 'ok' && h.s && h.s.noReplyPct + h.s.lossPct > 0;
+    if (under) tip = '';
+    if ((h.status === 'partial' || under) && h.s) {
       var a = pr(h.s.noReplyPct), lp = pr(h.s.lossPct);
-      tip += ' ' + (m.range
+      tip += (tip ? ' ' : '') + (m.range
         ? L('За выделенный период без ответа ' + a.ru + ' проб, потерь ' + lp.ru + '.', 'No reply to ' + a.en + ' of probes in the selected period, ' + lp.en + ' loss.')
         : L('За окно без ответа ' + a.ru + ' проб, потерь ' + lp.ru + '.', 'No reply to ' + a.en + ' of probes in the window, ' + lp.en + ' loss.'));
     }
@@ -754,7 +762,10 @@
     out += '<div class="tl-well tl-jit" data-plot="jit">' + (src ? jitterSvg(src, sel) : h.status === 'silent' ? hatchSvg(16, sel) : '') + OV + '</div>';
     if (src) {
       out += '<div class="tl-gl"><span style="top:1px;transform:none" class="num">' + P(msi(max)) + '</span><span style="top:50%" class="num">' + P(nip(max / 2)) + '</span><span style="bottom:0;top:auto;transform:none" class="num">0</span></div>';
-      out += '<div class="tl-well tl-chart" data-plot="hop">' + chartSvg(src, 120, true, sel) + OV + '</div>';
+      // A router that says the destination is unreachable answers every probe, and such answers carry no latency.
+      var noLatency = h.status === 'unreachable' && !(h.full && fin(h.full.max));
+      out += '<div class="tl-well tl-chart" data-plot="hop">' + chartSvg(src, 120, true, sel) +
+        (noLatency ? '<div class="tl-note">' + P({ ru: 'Роутер сообщает, что цель недоступна. В таких ответах нет задержки.', en: 'The router says the destination is unreachable. Such answers carry no latency.' }) + '</div>' : '') + OV + '</div>';
     } else {
       // The node does not answer probes of this type: only the hatch, the status and its hint are in the head.
       // A hop that has only a status for this probe type gets a short note on the field.
@@ -1072,7 +1083,7 @@
     var src = hp.src;
     if (!src) { var p = stP(hp.status, probe); return '<span class="tp-o">' + esc(L(p.ru, p.en)) + '</span>'; }
     var lost = !!setOf(src.loss)[i], part = !lost && !!setOf(src.partial)[i], v = WT.series(src.series)[i], has = v != null;
-    var val = has ? msr(v) : lost || part ? { ru: 'нет ответа', en: 'no reply' } : { ru: 'нет данных', en: 'no data' };
+    var val = has ? msr(v) : lost || part ? { ru: 'нет ответа', en: 'no reply' } : hp.status === 'unreachable' ? { ru: 'ответ без задержки', en: 'answer without latency' } : { ru: 'нет данных', en: 'no data' };
     // A node that answers only some probes: these are replies, not loss («Ответы 1 из 2»), as in the stack hint.
     var n, c = countAt(src, i);
     if (c && part) n = mk('partial') + esc(L((c.n - c.k) + ' из ' + c.n, (c.n - c.k) + ' of ' + c.n));

@@ -40,6 +40,9 @@ pub struct MonitorConfig {
     pub max_ttl: u8,
     pub payload: u16,
     pub send_gap: Duration,
+    /// While the destination does not answer, how often a round goes to `max_ttl` instead of
+    /// stopping at the known length: the route may have grown past a router that keeps silent.
+    pub full_round_every: Duration,
 }
 
 impl MonitorConfig {
@@ -51,6 +54,7 @@ impl MonitorConfig {
             max_ttl: 30,
             payload: 32,
             send_gap: Duration::from_millis(25),
+            full_round_every: Duration::from_secs(60),
         }
     }
 }
@@ -260,6 +264,9 @@ struct Planner<F> {
     resolve_at: Option<Instant>,
     /// Where rounds can stop, learned from the rounds reported so far.
     path_len: Option<u8>,
+    /// From this time on a round goes the full depth: the destination has not answered since
+    /// `full_round_every` before it.
+    full_round_at: Instant,
     workers: Vec<Worker>,
     worker_ids: u64,
     next_seq: u64,
@@ -278,6 +285,7 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
     ) -> Self {
         let now = Instant::now();
         let literal = cfg.host.parse::<Ipv4Addr>().ok();
+        let full_round_every = cfg.full_round_every;
         Self {
             interval: cfg.interval.max(MIN_INTERVAL),
             cfg,
@@ -294,6 +302,7 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
             literal: literal.is_some(),
             resolve_at: if literal.is_some() { None } else { Some(now) },
             path_len: None,
+            full_round_at: now + full_round_every,
             workers: Vec::new(),
             worker_ids: 0,
             next_seq: 0,
@@ -394,12 +403,18 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
         self.retire_idle(now, IDLE_WORKER);
         let Some(dst) = self.dst else { return };
         let Some(w) = self.free_worker() else { return };
+        // The destination did not answer for a while: look past the known length, the route
+        // may have grown behind a router that keeps silent.
+        let known = self.path_len.filter(|_| now < self.full_round_at);
+        if known.is_none() {
+            self.full_round_at = now + self.cfg.full_round_every;
+        }
         let job = Job {
             seq: self.next_seq,
             ts_ms: now_ms(),
             spec: RoundSpec {
                 dst,
-                max_ttl: self.path_len.unwrap_or(self.cfg.max_ttl),
+                max_ttl: known.unwrap_or(self.cfg.max_ttl),
                 timeout: self.cfg.timeout,
                 payload: self.cfg.payload,
                 send_gap: self.cfg.send_gap,
@@ -438,8 +453,13 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
                 // Rounds to an address the host no longer resolves to tell nothing about the path.
                 if self.dst == Some(done.dst) {
                     self.path_len = next_path_len(self.path_len, &record);
+                    if record.reached {
+                        self.full_round_at = Instant::now() + self.cfg.full_round_every;
+                    }
                 }
-                (self.on_event)(MonitorEvent::Round(record));
+                if !stopped_short(&record, self.cfg.max_ttl) {
+                    (self.on_event)(MonitorEvent::Round(record));
+                }
             }
             Err(e) => (self.on_event)(MonitorEvent::Error(format!(
                 "probe to {} failed: {e}",
@@ -597,6 +617,18 @@ pub(crate) fn next_path_len(known: Option<u8>, record: &RoundRecord) -> Option<u
     }
 }
 
+/// The deepest probe expired on the way in a round that stopped at the known length: the route
+/// is longer now, and the round could not have reached the destination. It says nothing about
+/// loss, so it is not reported; the next round goes the full depth.
+fn stopped_short(record: &RoundRecord, max_ttl: u8) -> bool {
+    !record.reached
+        && record.path_len < max_ttl
+        && record
+            .hops
+            .last()
+            .is_some_and(|h| h.kind == ReplyKind::TimeExceeded)
+}
+
 /// Cuts a round at the destination. Probes with a larger TTL reach the destination too
 /// and add nothing. A round that did not reach it ends one silent slot after the last hop
 /// that answered, or at a router that says the destination is unreachable; the statistics
@@ -653,6 +685,7 @@ pub fn now_ms() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread::sleep;
 
@@ -1008,6 +1041,166 @@ mod tests {
         let lost = assemble(Ipv4Addr::new(10, 0, 0, 9), 0, hops);
         assert!(!lost.reached);
         assert_eq!(next_path_len(Some(4), &lost), Some(4));
+    }
+
+    /// What round `k` finds: the TTL of the destination (`None`: it does not answer at all) and a
+    /// router that keeps silent.
+    type Route = Arc<dyn Fn(usize) -> (Option<u8>, Option<u8>) + Send + Sync>;
+
+    struct Changing {
+        rounds: Arc<AtomicUsize>,
+        route: Route,
+        max_ttls: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Prober for Changing {
+        fn round(&mut self, spec: &RoundSpec) -> io::Result<Vec<HopSample>> {
+            let k = self.rounds.fetch_add(1, Ordering::SeqCst);
+            self.max_ttls.lock().unwrap().push(spec.max_ttl);
+            let (dest, silent) = (self.route)(k);
+            Ok((1..=spec.max_ttl)
+                .map(|ttl| {
+                    if silent == Some(ttl) || dest.is_none() {
+                        return HopSample::lost(ttl, ReplyKind::Timeout);
+                    }
+                    let echo = dest.is_some_and(|d| ttl >= d);
+                    HopSample {
+                        ttl,
+                        kind: if echo {
+                            ReplyKind::Echo
+                        } else {
+                            ReplyKind::TimeExceeded
+                        },
+                        addr: Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, ttl))),
+                        rtt_us: Some(1000),
+                    }
+                })
+                .collect())
+        }
+    }
+
+    struct RouteRun {
+        handle: MonitorHandle,
+        rounds: Arc<Mutex<Vec<RoundRecord>>>,
+        max_ttls: Arc<Mutex<Vec<u8>>>,
+    }
+
+    /// Rounds every 100 ms up to TTL 12, on a route that changes with the round number.
+    fn on_route(
+        full_round_every: Duration,
+        route: impl Fn(usize) -> (Option<u8>, Option<u8>) + Send + Sync + 'static,
+    ) -> RouteRun {
+        let route: Route = Arc::new(route);
+        let max_ttls = Arc::new(Mutex::new(Vec::new()));
+        let (count, seen) = (Arc::new(AtomicUsize::new(0)), max_ttls.clone());
+        let prober: ProberFactory = Box::new(move || {
+            Ok(Box::new(Changing {
+                rounds: count.clone(),
+                route: route.clone(),
+                max_ttls: seen.clone(),
+            }) as Box<dyn Prober>)
+        });
+        let mut cfg = MonitorConfig::new(HOST);
+        cfg.interval = ms(100);
+        cfg.timeout = ms(400);
+        cfg.send_gap = Duration::ZERO;
+        cfg.max_ttl = 12;
+        cfg.full_round_every = full_round_every;
+        let rounds = Arc::new(Mutex::new(Vec::new()));
+        let r = rounds.clone();
+        let opts = MonitorOptions {
+            prober: Some(prober),
+            ..Default::default()
+        };
+        let handle = spawn_monitor_with(cfg, opts, move |ev| {
+            if let MonitorEvent::Round(x) = ev {
+                r.lock().unwrap().push(x);
+            }
+        })
+        .unwrap();
+        RouteRun {
+            handle,
+            rounds,
+            max_ttls,
+        }
+    }
+
+    /// Waits for the rounds to satisfy `done`, up to 15 s for a busy machine.
+    fn wait_rounds(run: &RouteRun, done: impl Fn(&[RoundRecord]) -> bool) {
+        let start = Instant::now();
+        while !done(&run.rounds.lock().unwrap()) {
+            assert!(
+                start.elapsed() < Duration::from_secs(15),
+                "{:?}",
+                run.rounds
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|r| (r.path_len, r.reached))
+                    .collect::<Vec<_>>()
+            );
+            sleep(ms(20));
+        }
+    }
+
+    #[test]
+    fn a_round_that_stopped_short_of_a_longer_route_is_not_a_lost_round() {
+        // The destination moves from TTL 4 to TTL 6 after round 5, and every router answers.
+        let run = on_route(Duration::from_secs(60), |k| {
+            (Some(if k < 5 { 4 } else { 6 }), None)
+        });
+        wait_rounds(&run, |r| r.iter().filter(|x| x.path_len == 6).count() >= 5);
+        run.handle.stop();
+        let rounds = run.rounds.lock().unwrap();
+        assert!(rounds.iter().all(|x| x.reached), "no false loss");
+        let ttls = run.max_ttls.lock().unwrap();
+        assert!(
+            ttls.iter().skip(1).any(|&t| t == 12),
+            "full round: {ttls:?}"
+        );
+        assert_eq!(*ttls.last().unwrap(), 6);
+    }
+
+    #[test]
+    fn a_longer_route_behind_a_silent_router_is_found_by_a_full_round() {
+        // The destination moves from TTL 4 to TTL 6 after round 3, and the router now at TTL 4
+        // keeps silent: nothing in a round to TTL 4 says the route got longer.
+        let run = on_route(ms(400), |k| {
+            if k < 3 {
+                (Some(4), None)
+            } else {
+                (Some(6), Some(4))
+            }
+        });
+        wait_rounds(&run, |r| r.iter().filter(|x| x.path_len == 6).count() >= 5);
+        run.handle.stop();
+        let rounds = run.rounds.lock().unwrap();
+        assert!(
+            rounds.iter().any(|x| !x.reached),
+            "lost until the full round"
+        );
+        // Reached again for good once it found the new length.
+        assert!(rounds
+            .iter()
+            .rev()
+            .take(3)
+            .all(|x| x.reached && x.path_len == 6));
+    }
+
+    #[test]
+    fn full_rounds_go_only_while_the_destination_does_not_answer() {
+        // It answers for the first 15 rounds, then nothing on the way does.
+        let run = on_route(ms(300), |k| (if k < 15 { Some(4) } else { None }, None));
+        wait_rounds(&run, |r| r.len() >= 40);
+        run.handle.stop();
+        let ttls = run.max_ttls.lock().unwrap();
+        // Round 0 knows nothing. While it answers, rounds stop at the destination.
+        assert_eq!(ttls[0], 12);
+        assert!(ttls[2..10].iter().all(|&t| t == 4), "{ttls:?}");
+        // After that about every third round is a full one, at 100 ms apart and every 300 ms.
+        let full = ttls[20..].iter().filter(|&&t| t == 12).count();
+        let rest = ttls.len() - 20;
+        assert!(full >= 2 && full * 2 <= rest, "{full} of {rest}: {ttls:?}");
     }
 
     /// The platform backend at 0.5 s. Sends real ICMP, so it runs only by hand:

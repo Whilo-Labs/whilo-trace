@@ -67,7 +67,10 @@ pub struct Verdict {
 pub struct Bucket {
     pub t_ms: i64,
     pub sent: u32,
+    /// Rounds with loss on the path.
     pub lost: u32,
+    /// Rounds where the hop did not answer while the destination did.
+    pub no_reply: u32,
     pub min_ms: Option<f64>,
     pub avg_ms: Option<f64>,
     pub max_ms: Option<f64>,
@@ -197,12 +200,20 @@ fn notable(part: u32, all: u32) -> bool {
 /// Tells hops that only drop ICMP aimed at themselves apart from real loss on the path.
 /// Loss at a hop matters only if it carries on to the hops after it.
 fn classify(rows: &mut [HopStats]) {
+    let dest_row = rows.iter().rposition(|r| r.is_destination);
     let statuses: Vec<HopStatus> = (0..rows.len())
         .map(|i| {
             let row = &rows[i];
             let later = &rows[i + 1..];
             let later_alive = later.iter().any(|r| r.recv > 0);
-            let later_min_loss = later
+            // A row past the destination has only the few rounds that went that deep and none
+            // of the lost ones, so its low loss does not mean the loss stopped.
+            let carried = match dest_row {
+                Some(d) if i < d => &rows[i + 1..=d],
+                Some(_) => &[],
+                None => later,
+            };
+            let later_min_loss = carried
                 .iter()
                 .filter(|r| r.recv > 0)
                 .map(|r| r.loss_pct)
@@ -231,23 +242,22 @@ fn classify(rows: &mut [HopStats]) {
         row.status = status;
     }
 
-    // Walk back from the destination while the loss continues; silent hops tell nothing.
-    let Some(dest) = rows.iter().rposition(|r| r.is_destination) else {
+    // Walk back from the destination while the loss continues.
+    let Some(dest) = dest_row else {
         return;
     };
     if rows[dest].status != HopStatus::Lossy {
         return;
     }
-    let dest_loss = rows[dest].loss_pct;
     let mut origin = dest;
     for j in (0..dest).rev() {
         match rows[j].status {
             // A router that says the destination is unreachable is where those rounds end.
             HopStatus::Lossy | HopStatus::Unreachable => origin = j,
-            // A router that limits its own answers and still misses what the destination does
-            // carries that loss too.
-            HopStatus::RateLimited if rows[j].loss_pct >= dest_loss => origin = j,
-            HopStatus::Silent => {}
+            // Its own misses tell nothing about the path: a silent router, or one that limits
+            // its answers, may sit inside the loss or before it. The walk goes on past it, and
+            // only a hop that shows the loss becomes the start.
+            HopStatus::Silent | HopStatus::RateLimited => {}
             _ => break,
         }
     }
@@ -296,18 +306,21 @@ pub fn verdict(rounds: &[RoundRecord], hops: &[HopStats]) -> Verdict {
 }
 
 /// Latency and loss in `buckets` equal slices of `[from_ms, to_ms)`.
-/// `ttl == None` follows the destination, whatever its TTL in each round.
+/// `ttl == None` follows the destination, whatever its TTL in each round. `known`: the
+/// destination when none of `rounds` reached it, for `lost_past_end`.
 pub fn timeline(
     rounds: &[RoundRecord],
     ttl: Option<u8>,
     from_ms: i64,
     to_ms: i64,
     buckets: usize,
+    known: Option<u8>,
 ) -> Vec<Bucket> {
     let buckets = buckets.max(1);
     let span = (to_ms - from_ms).max(1);
-    let toward = toward_in(rounds, from_ms, to_ms);
-    let mut acc: Vec<(u32, u32, Vec<f64>)> = vec![(0, 0, Vec::new()); buckets];
+    let toward = toward_in(rounds, from_ms, to_ms).or(known);
+    // Rounds, lost on the path, without a reply, the replies.
+    let mut acc: Vec<(u32, u32, u32, Vec<f64>)> = vec![(0, 0, 0, Vec::new()); buckets];
     for r in rounds {
         if r.ts_ms < from_ms || r.ts_ms >= to_ms {
             continue;
@@ -319,21 +332,26 @@ pub fn timeline(
             Some(Outcome::Reply(ms)) => {
                 slot.0 += 1;
                 if let Some(ms) = ms {
-                    slot.2.push(ms);
+                    slot.3.push(ms);
                 }
             }
-            Some(Outcome::Lost | Outcome::NoReply) => {
+            Some(Outcome::Lost) => {
                 slot.0 += 1;
                 slot.1 += 1;
+            }
+            Some(Outcome::NoReply) => {
+                slot.0 += 1;
+                slot.2 += 1;
             }
         }
     }
     acc.into_iter()
         .enumerate()
-        .map(|(i, (sent, lost, rtts))| Bucket {
+        .map(|(i, (sent, lost, no_reply, rtts))| Bucket {
             t_ms: from_ms + (span as i128 * i as i128 / buckets as i128) as i64,
             sent,
             lost,
+            no_reply,
             min_ms: rtts.iter().copied().reduce(f64::min),
             avg_ms: (!rtts.is_empty()).then(|| rtts.iter().sum::<f64>() / rtts.len() as f64),
             max_ms: rtts.iter().copied().reduce(f64::max),
@@ -691,9 +709,135 @@ mod tests {
         // The hop timelines count those rounds as lost on the path too.
         let s = slots(&r, Some(5), 0, 10_000, 1);
         assert_eq!((s[0].sent, s[0].lost), (10, 2));
-        let t = timeline(&r, Some(4), 0, 10_000, 1);
+        let t = timeline(&r, Some(4), 0, 10_000, 1, None);
         assert_eq!((t[0].sent, t[0].lost), (10, 2));
         assert_eq!(row_stats(&r, Some(4), 0, 10_000).loss_pct, 20.0);
+    }
+
+    /// A round to the destination at TTL `len`, where routers answer every probe before it.
+    fn reached_at(k: i64, len: u8) -> RoundRecord {
+        let samples = (1..=len)
+            .map(|ttl| HopSample {
+                ttl,
+                kind: if ttl == len {
+                    ReplyKind::Echo
+                } else {
+                    ReplyKind::TimeExceeded
+                },
+                addr: Some(ip(ttl)),
+                rtt_us: Some(1000 * ttl as u32),
+            })
+            .collect();
+        crate::monitor::assemble(Ipv4Addr::new(10, 0, 0, len), k * 1000, samples)
+    }
+
+    #[test]
+    fn one_round_longer_than_the_route_does_not_hide_the_loss() {
+        // 5% lost from hop 5 on, the destination at TTL 9.
+        let mut r: Vec<RoundRecord> = (0..200)
+            .map(|k| {
+                let mut x = reached_at(k, 9);
+                if k % 20 == 7 {
+                    x.hops.truncate(5);
+                    x.hops[4] = HopSample::lost(5, ReplyKind::Timeout);
+                    x.path_len = 5;
+                    x.reached = false;
+                }
+                x
+            })
+            .collect();
+        // One round found the destination a TTL deeper: its probe to TTL 9 got lost, the next
+        // one answered. The first round after a start or a new address can do that.
+        r[0] = reached_at(0, 10);
+        r[0].hops[8] = HopSample::lost(9, ReplyKind::Timeout);
+        let h = hop_stats(&r);
+        assert_eq!(h.len(), 10, "the deeper row stays in the table");
+        for x in &h[4..9] {
+            assert_eq!(x.status, HopStatus::Lossy, "{h:?}");
+        }
+        assert!(h[4].loss_origin && h[8].is_destination, "{h:?}");
+        assert_eq!(h.iter().filter(|x| x.loss_origin).count(), 1);
+    }
+
+    #[test]
+    fn a_router_that_limits_its_answers_is_not_where_the_loss_starts() {
+        // Hop 2 answers now and then, hop 3 never, hop 4 less than half the time and in every
+        // round the destination lost: the loss starts after it.
+        let r: Vec<RoundRecord> = (0..1000)
+            .map(|k| {
+                let lost = k % 20 == 3;
+                let hop = |ttl: u8, on: bool, kind: ReplyKind| {
+                    if on {
+                        HopSample {
+                            ttl,
+                            kind,
+                            addr: Some(ip(ttl)),
+                            rtt_us: Some(1000),
+                        }
+                    } else {
+                        HopSample::lost(ttl, ReplyKind::Timeout)
+                    }
+                };
+                crate::monitor::assemble(
+                    Ipv4Addr::new(10, 0, 0, 5),
+                    k * 1000,
+                    vec![
+                        hop(1, true, ReplyKind::TimeExceeded),
+                        hop(2, k % 33 == 0, ReplyKind::TimeExceeded),
+                        hop(3, false, ReplyKind::TimeExceeded),
+                        hop(4, lost || k % 5 < 2, ReplyKind::TimeExceeded),
+                        hop(5, !lost, ReplyKind::Echo),
+                    ],
+                )
+            })
+            .collect();
+        let h = hop_stats(&r);
+        assert_eq!(h[1].status, HopStatus::RateLimited, "{h:?}");
+        assert_eq!(h[2].status, HopStatus::Silent, "{h:?}");
+        assert_eq!(h[3].status, HopStatus::RateLimited, "{h:?}");
+        let origin: Vec<u8> = h.iter().filter(|x| x.loss_origin).map(|x| x.ttl).collect();
+        assert_eq!(origin, [5], "{h:?}");
+    }
+
+    #[test]
+    fn a_router_that_limits_its_answers_inside_the_loss_is_walked_past() {
+        // 20% lost from hop 2 on; hop 3 also limits its answers to 40% of the rest.
+        let r = assembled(&[
+            "++++++++++++++++++++",
+            "++++.++++.++++.++++.",
+            "+.+.....+.+....+.+..",
+            "++++.++++.++++.++++.",
+            "++++.++++.++++.++++.",
+        ]);
+        let h = hop_stats(&r);
+        assert_eq!(h[1].status, HopStatus::Lossy, "{h:?}");
+        assert_eq!(h[2].status, HopStatus::RateLimited, "{h:?}");
+        assert!(h[1].loss_origin, "{h:?}");
+    }
+
+    #[test]
+    fn a_hop_that_misses_while_the_destination_answers_is_not_loss_on_its_timeline() {
+        let r = assembled(&["+.++", "++++", "++.+"]);
+        let t = timeline(&r, Some(1), 0, 4000, 1, None);
+        assert_eq!((t[0].sent, t[0].lost, t[0].no_reply), (4, 0, 1));
+        // Round 2 lost the destination, and it is loss on its own line.
+        assert_eq!(timeline(&r, None, 0, 4000, 1, None)[0].lost, 1);
+    }
+
+    #[test]
+    fn a_period_where_no_round_reached_counts_toward_the_known_destination() {
+        // Every round ends after hop 2, the destination is known to be at TTL 5 from elsewhere.
+        let r = assembled(&["++++", "++++", "....", "....", "...."]);
+        assert_eq!(hop_stats(&r).len(), 3);
+        let h = hop_stats_toward(&r, Some(5));
+        assert_eq!(h.len(), 5);
+        assert!(
+            h[4].is_destination && h[4].sent == 4 && h[4].recv == 0,
+            "{h:?}"
+        );
+        assert_eq!(timeline(&r, Some(4), 0, 4000, 1, None)[0].sent, 0);
+        let t = timeline(&r, Some(4), 0, 4000, 1, Some(5));
+        assert_eq!((t[0].sent, t[0].lost), (4, 4));
     }
 
     #[test]
@@ -748,7 +892,7 @@ mod tests {
     #[test]
     fn timeline_counts_destination_loss() {
         let r = rounds(&["++++", "+.+."]);
-        let t = timeline(&r, None, 0, 4000, 2);
+        let t = timeline(&r, None, 0, 4000, 2, None);
         assert_eq!((t[0].sent, t[0].lost), (2, 1));
         assert_eq!((t[1].sent, t[1].lost), (2, 1));
         assert_eq!(t[0].avg_ms, Some(2.0));

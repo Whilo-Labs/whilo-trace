@@ -625,6 +625,160 @@ fn buckets_match_the_engine_when_rounds_end_early() {
     );
 }
 
+/// The window and the engine agree on a round deeper than the route and on a router that limits
+/// its answers: the loss still starts at the first hop that shows it.
+#[test]
+fn buckets_classify_like_the_engine_around_the_destination() {
+    // Hop 2 answers every other round; rounds 7 and 27 lose everything from hop 3 on.
+    let every_other: String = (0..40)
+        .map(|k| if k % 2 == 0 { '+' } else { '.' })
+        .collect();
+    let from_3: String = (0..40)
+        .map(|k| if k == 7 || k == 27 { '.' } else { '+' })
+        .collect();
+    let all = "+".repeat(40);
+    let mut r: Vec<RoundRecord> = rounds(&[&all, &every_other, &from_3, &from_3], 1000)
+        .into_iter()
+        .map(kept)
+        .collect();
+    // Round 0 found the destination one TTL deeper: its probe to TTL 4 got lost.
+    let deeper = rounds(&["+", "+", "+", ".", "+"], 1000).remove(0);
+    r[0] = kept(deeper);
+    assert_eq!((r[0].path_len, r[0].reached), (5, true));
+    let g = Grid::build(&r, 1000, 0, 42);
+    let w = g.window(0, 42);
+    let (mine, theirs) = (w.hops(), hop_stats(&r));
+    assert_eq!(mine.len(), theirs.len());
+    for (m, t) in mine.iter().zip(&theirs) {
+        assert_eq!(
+            (m.ttl, m.status, m.loss_origin, m.is_destination),
+            (t.ttl, t.status, t.loss_origin, t.is_destination),
+            "{mine:?}"
+        );
+        assert_eq!((m.sent, m.recv), (t.sent, t.recv));
+    }
+    assert_eq!(mine[1].status, HopStatus::RateLimited);
+    assert_eq!(mine[2].status, HopStatus::Lossy);
+    assert!(mine[3].is_destination && mine[3].status == HopStatus::Lossy);
+    let origin: Vec<u8> = mine
+        .iter()
+        .filter(|h| h.loss_origin)
+        .map(|h| h.ttl)
+        .collect();
+    assert_eq!(origin, vec![3]);
+}
+
+#[test]
+fn the_command_line_does_not_change_what_the_app_probes() {
+    let s = memory();
+    // A target it never heard of stays off the main screen, its history kept.
+    let new = s.watch_target("watched.example").unwrap();
+    let row = |id: i64| {
+        s.targets()
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == id)
+            .unwrap()
+    };
+    assert!(!row(new).active);
+    assert_eq!(
+        s.find_target("watched.example").unwrap().map(|t| t.id),
+        Some(new)
+    );
+    // One removed in the app stays removed, one paused stays paused.
+    let removed = s.add_target("removed.example").unwrap();
+    s.set_active(removed, false).unwrap();
+    assert_eq!(s.watch_target("REMOVED.example").unwrap(), removed);
+    assert!(!row(removed).active);
+    let paused = s.add_target("paused.example").unwrap();
+    s.set_paused(paused, true).unwrap();
+    assert_eq!(s.watch_target("paused.example").unwrap(), paused);
+    assert!(row(paused).active && row(paused).paused);
+    // Added in the app later, it comes back as a usual target.
+    assert_eq!(s.add_target("watched.example").unwrap(), new);
+    assert!(row(new).active);
+}
+
+#[test]
+fn the_destination_of_an_outage_comes_from_the_nearest_round_that_reached_it() {
+    let mut s = memory();
+    let id = s.add_target("10.0.0.4").unwrap();
+    let day = 86_400_000;
+    let at = |ts: i64, len: u8, reached: bool| {
+        let mut r = rounds(&vec!["+"; len as usize], 1000).remove(0);
+        r.ts_ms = ts;
+        r.reached = reached;
+        r
+    };
+    s.insert_round(id, &at(10 * day, 4, true)).unwrap();
+    s.insert_round(id, &at(10 * day + 1000, 5, true)).unwrap();
+    s.insert_round(id, &at(10 * day + 2000, 2, false)).unwrap();
+    s.insert_round(id, &at(10 * day + 9000, 6, true)).unwrap();
+    // The nearest before the period wins, a lost round does not count.
+    let near = |from, to| s.dest_ttl_near(id, from, to).unwrap();
+    assert_eq!(near(10 * day + 5000, 10 * day + 6000), Some(5));
+    // Nothing before it: the nearest after.
+    assert_eq!(near(10 * day - 1000, 10 * day), Some(4));
+    // More than a day away on both sides.
+    assert_eq!(near(12 * day, 13 * day), None);
+    assert_eq!(near(8 * day, 9 * day - 1), None);
+}
+
+#[test]
+fn a_pinned_hop_that_misses_while_the_destination_answers_is_amber_not_red() {
+    use super::report::{self, Document, PinnedLine, Report, Section};
+    use whilo_trace_engine::{timeline, verdict};
+    let a = rounds(&["+.+.+.++", "++++++++", "++++++++"], 1000);
+    let hops = hop_stats(&a);
+    let v = verdict(&a, &hops);
+    let line = timeline(&a, None, 0, 8000, 8, None);
+    let hop = timeline(&a, Some(1), 0, 8000, 8, None);
+    assert_eq!(hop.iter().map(|b| b.lost).sum::<u32>(), 0);
+    assert_eq!(hop.iter().map(|b| b.no_reply).sum::<u32>(), 3);
+    let svg = report::svg_timeline(&hop, 0, 8000, 0);
+    assert!(svg.contains("#C27400") && !svg.contains("#e5484d"), "{svg}");
+    let names = vec![None; hops.len()];
+    let doc = Document {
+        sections: vec![Section {
+            report: Report {
+                host: "10.0.0.3",
+                dst: a.last().map(|r| r.dst),
+                probe: ProbeKind::Icmp,
+                from_ms: 0,
+                to_ms: 8000,
+                tz_offset_min: 0,
+                interval_s: 1.0,
+                hops: &hops,
+                names: &names,
+                timeline: &line,
+                verdict: &v,
+                generated_ms: 8000,
+            },
+            pinned: vec![PinnedLine {
+                ttl: 1,
+                addr: Some(ip(1)),
+                name: None,
+                timeline: hop,
+            }],
+        }],
+        from_ms: 0,
+        to_ms: 8000,
+        tz_offset_min: 0,
+        generated_ms: 8000,
+        findings: None,
+        lang: "en",
+        map_png: None,
+    };
+    let html = report::document_html(&doc);
+    assert!(html.contains("</i>answers some probes</div>"), "{html}");
+    let json: serde_json::Value = serde_json::from_str(&report::document_json(&doc)).unwrap();
+    assert_eq!(
+        json["targets"][0]["pinned"][0]["timeline"][1]["no_reply"],
+        1
+    );
+    assert_eq!(json["targets"][0]["pinned"][0]["timeline"][1]["lost"], 0);
+}
+
 /// A router that says the destination is unreachable: the window classifies it as the engine
 /// does, and it is not the destination.
 #[test]
@@ -851,8 +1005,8 @@ fn a_report_covers_several_targets_in_the_window_language() {
     let (ha, hb) = (hop_stats(&a), hop_stats(&b));
     let (va, vb) = (verdict(&a, &ha), verdict(&b, &hb));
     let (ta, tb) = (
-        timeline(&a, None, 0, 8000, 8),
-        timeline(&b, None, 0, 8000, 8),
+        timeline(&a, None, 0, 8000, 8, None),
+        timeline(&b, None, 0, 8000, 8, None),
     );
     let names_a = vec![None; ha.len()];
     let names_b = vec![None; hb.len()];
@@ -878,7 +1032,7 @@ fn a_report_covers_several_targets_in_the_window_language() {
                     ttl: 1,
                     addr: Some(ip(1)),
                     name: Some("router".into()),
-                    timeline: timeline(&a, Some(1), 0, 8000, 8),
+                    timeline: timeline(&a, Some(1), 0, 8000, 8, None),
                 }],
             },
             Section {
@@ -929,8 +1083,9 @@ fn a_report_covers_several_targets_in_the_window_language() {
         report::verdict_lines(&va, ProbeKind::Icmp).len()
             + report::verdict_lines(&vb, ProbeKind::Icmp).len()
     );
-    assert!(report::verdict_lines(&va, ProbeKind::Icmp).iter().any(|l| l
-        == "Hop 2 does not answer ICMP probes but passes traffic on; that is not packet loss."));
+    assert!(report::verdict_lines(&va, ProbeKind::Icmp)
+        .iter()
+        .any(|l| l == "Hop 2 does not answer ICMP probes; later hops answer them."));
 
     // The window's findings go in as they are; none means none, not the engine's English ones.
     let shown = doc_with(Some(vec!["Потери начинаются на хопе 3.".into()]));
@@ -953,7 +1108,7 @@ fn a_report_with_the_route_map_shows_it_inline_and_credits_dbip() {
     let a = rounds(&["++++", "++++"], 1000);
     let hops = hop_stats(&a);
     let v = verdict(&a, &hops);
-    let line = timeline(&a, None, 0, 4000, 4);
+    let line = timeline(&a, None, 0, 4000, 4, None);
     let names = vec![None; hops.len()];
     let r = Report {
         host: "10.0.0.2",

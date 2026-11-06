@@ -128,6 +128,19 @@ fn probe_method(p: ProbeKind) -> &'static str {
     }
 }
 
+/// How often the rounds of a period went out: the median gap between their starts, so a pause or
+/// a changed interval does not bend it; `fallback` with fewer than two rounds.
+pub fn round_interval_s(rounds: &[RoundRecord], fallback: f64) -> f64 {
+    let mut gaps: Vec<i64> = rounds
+        .windows(2)
+        .map(|w| w[1].ts_ms - w[0].ts_ms)
+        .filter(|g| *g > 0)
+        .collect();
+    gaps.sort_unstable();
+    gaps.get(gaps.len() / 2)
+        .map_or(fallback, |g| *g as f64 / 1000.0)
+}
+
 /// Status names in English, as CSV files and the command line write them.
 pub fn status_label(s: HopStatus, probe: ProbeKind) -> String {
     status_text(s, "en", probe)
@@ -186,11 +199,13 @@ pub fn verdict_lines(v: &Verdict, probe: ProbeKind) -> Vec<String> {
                 "Packet loss to the destination: {:.1}% over {} rounds.",
                 loss, v.rounds
             ));
-            if let Some(ttl) = v.origin_ttl {
+            if let Some(ttl) = v.origin_ttl.filter(|t| v.dest_ttl != Some(*t)) {
                 let at = v.origin_addr.map(|a| format!(" ({a})")).unwrap_or_default();
                 lines.push(format!(
                     "The loss starts at hop {ttl}{at} and carries on to the destination."
                 ));
+            } else if v.origin_ttl.is_some() {
+                lines.push("The loss shows up only at the destination.".to_string());
             }
         }
     }
@@ -205,20 +220,20 @@ pub fn verdict_lines(v: &Verdict, probe: ProbeKind) -> Vec<String> {
     match v.silent_hops.as_slice() {
         [] => {}
         [one] => lines.push(format!(
-            "Hop {one} does not answer {p} probes but passes traffic on; that is not packet loss."
+            "Hop {one} does not answer {p} probes; later hops answer them."
         )),
         many => lines.push(format!(
-            "Hops {} do not answer {p} probes but pass traffic on; that is not packet loss.",
+            "Hops {} do not answer {p} probes; later hops answer them.",
             join(many)
         )),
     }
     match v.rate_limited_hops.as_slice() {
         [] => {}
         [one] => lines.push(format!(
-            "Hop {one} answers only some {p} probes while later hops answer them; that is not packet loss."
+            "Hop {one} answers only some {p} probes; later hops answer them."
         )),
         many => lines.push(format!(
-            "Hops {} answer only some {p} probes while later hops answer them; that is not packet loss.",
+            "Hops {} answer only some {p} probes; later hops answer them.",
             join(many)
         )),
     }
@@ -439,6 +454,7 @@ struct Words {
     avg_line: &'static str,
     band: &'static str,
     loss: &'static str,
+    partial: &'static str,
     cols: [&'static str; 11],
     unknown: &'static str,
     method: &'static str,
@@ -470,9 +486,9 @@ fn note(ru: bool, probes: &[ProbeKind]) -> String {
         many => format!("{} {} {partial}", many.join(", "), pick(ru, "или", "or")),
     };
     if ru {
-        format!("Хоп со статусом {named} пропускает трафик дальше; на соединение влияют только потери, которые продолжаются до цели.")
+        format!("Хоп со статусом {named} сам может отвечать не на все пробы; на соединение влияют только потери, которые продолжаются до цели.")
     } else {
-        format!("A hop marked {named} forwards traffic normally; only loss that continues to the destination affects the connection.")
+        format!("A hop marked {named} may itself answer only some probes; only loss that continues to the destination affects the connection.")
     }
 }
 
@@ -490,6 +506,7 @@ fn words(ru: bool) -> Words {
             avg_line: "средняя задержка",
             band: "от минимума до максимума",
             loss: "потери",
+            partial: "отвечает не на все пробы",
             cols: [
                 "Хоп",
                 "Адрес",
@@ -521,6 +538,7 @@ fn words(ru: bool) -> Words {
             avg_line: "average latency",
             band: "min to max",
             loss: "packet loss",
+            partial: "answers some probes",
             cols: [
                 "Hop", "Address", "Name", "Loss", "Sent", "Avg", "Min", "Max", "Jitter", "Last",
                 "Status",
@@ -605,6 +623,14 @@ pub fn document_html(d: &Document) -> String {
                 p.ttl,
                 esc(&who),
                 svg_timeline_in(&p.timeline, d.from_ms, d.to_ms, d.tz_offset_min, ru)
+            );
+        }
+        let partial = |b: &Bucket| b.lost == 0 && b.no_reply > 0;
+        if s.pinned.iter().any(|p| p.timeline.iter().any(partial)) {
+            let _ = write!(
+                body,
+                "<div class=\"legend\"><i style=\"background:{PARTIAL}\"></i>{}</div>",
+                w.partial
             );
         }
         let _ = write!(
@@ -711,6 +737,9 @@ fn method_any(d: &Document) -> String {
     }
     seen.join("; ")
 }
+
+/// Amber of the marks where a hop answered only some probes, as `--partial` of the interface.
+const PARTIAL: &str = "#C27400";
 
 fn legend(w: &Words) -> String {
     format!(
@@ -840,6 +869,14 @@ fn svg_timeline_in(
                 r##"<rect x="{:.1}" y="{top}" width="{bw:.1}" height="{ph}" fill="#e5484d" opacity="{:.2}"/>"##,
                 left + i as f64 * pw / n,
                 0.25 + 0.75 * share
+            );
+        } else if b.no_reply > 0 {
+            // The hop missed probes while the destination answered: a mark, not loss.
+            let _ = write!(
+                s,
+                r##"<rect x="{:.1}" y="{:.1}" width="{bw:.1}" height="5" fill="{PARTIAL}"/>"##,
+                left + i as f64 * pw / n,
+                top + ph - 5.0
             );
         }
     }
