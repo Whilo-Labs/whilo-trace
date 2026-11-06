@@ -1754,14 +1754,19 @@
     }
     var out = hops.map(function (x) {
       if (hide[x.ttl]) return Object.assign({}, x, { addr: L('скрыт', 'hidden'), name: null, masked: true, geo: own });
-      if (x !== dest && !inHome(x.geo)) return x;
-      var cp = x.geo.cc ? CP[x.geo.cc] || null : null;
+      // A row with the destination's address past it (the route changed length) goes as the destination does.
+      if (x !== dest && !(dest && x.addr === dest.addr) && !inHome(x.geo)) {
+        // Known only by its country: no city on the picture, whatever name the database has for the place.
+        return x.geo && x.geo.level === 'country' && x.geo.city ? Object.assign({}, x, { geo: Object.assign({}, x.geo, { city: null }) }) : x;
+      }
+      var cp = x.geo && x.geo.cc ? CP[x.geo.cc] || null : null;
       return Object.assign({}, x, { name: null, cityHidden: true,
         geo: Object.assign({}, own, cp ? { level: 'country', cc: x.geo.cc, country: x.geo.country || null, lat: cp[1], lon: cp[0] } : { level: 'none' }) });
     });
     // The header: no second label (reverse name or address) for such a destination; a hidden one typed as an address
     // is not written either.
-    var tg = inp.m.target, dh = hops.filter(function (x) { return x.dest; })[0] || null, gone = !!(dh && hide[dh.ttl]);
+    var tg = inp.m.target, dh = hops.filter(function (x) { return x.dest; })[0] || null;
+    var gone = !!(dh && hide[dh.ttl]) || ownAddress(tg && tg.host);
     var dc = !!(dh && out[hops.indexOf(dh)].cityHidden);
     if (tg && (dc || gone)) {
       tg = Object.assign({}, tg, { name: null });
@@ -1780,23 +1785,31 @@
       home: home && pt ? { lat: pt[1], lon: pt[0], city: null, cc: cc || null, country: null, source: 'auto', ttl: null } : null,
     };
   }
+  // A host typed as an address of your own network, as the core's own classes: for a destination that did not answer
+  // in the window and so has no place to tell.
+  function ownAddress(host) {
+    var m = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(String(host || ''));
+    if (!m) return false;
+    var a = +m[1], b = +m[2];
+    return a === 10 || a === 127 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254);
+  }
   // The home city's reach around the real home point, for any home (km), and the great-circle distance between two
   // [lon, lat] points in km (plain Math, as the core's physics).
   var HOME_KM = 50;
   // One city under the names DB-IP gives it (the 2026-11 file has Baku under 14): a district after it in brackets
   // («Baku (Yasamal)»), the city in the last brackets («Jinonice (Prague)»), after the last comma («Ampelokipoi,
-  // Thessaloniki»), with or without accents and capitals («Tehrān», «Malmö» and «Malmo»). Two names are one city
-  // when any of their forms match.
+  // Thessaloniki»), with or without accents and capitals («Tehrān», «Malmö» and «Malmo»). Two names are one city when
+  // the main form of one is among the forms of the other: two cities can have a district of the same name («Seattle
+  // (Downtown)» and «Los Angeles (Downtown)»).
   function sameCity(a, b) {
     var fa = cityForms(a), fb = cityForms(b);
-    for (var i = 0; i < fa.length; i++) if (fb.indexOf(fa[i]) >= 0) return true;
-    return false;
+    return fa.length > 0 && fb.length > 0 && (fb.indexOf(fa[0]) >= 0 || fa.indexOf(fb[0]) >= 0);
   }
   function cityForms(s) {
     s = String(s);
     var out = [s.split(' (')[0]], m = /\(([^()]+)\)\s*$/.exec(s), k = s.lastIndexOf(', ');
     if (m) out.push(m[1]);
-    if (k > 0) out.push(s.slice(k + 2));
+    if (k > 0) out.push(s.slice(k + 2).replace(/\)\s*$/, ''));
     return out.map(foldName).filter(function (x) { return x; });
   }
   function foldName(s) {
@@ -2017,7 +2030,7 @@
       long: !!fitPrev.long, folded: !!sc.folded, far: !!sc.far, step: sc.step, widthKm: Math.round(G.km(G.inv(sc.proj, [0, H / 2]) || [0, 0], G.inv(sc.proj, [W, H / 2]) || [0, 0])) };
   }
   window.MAP = {
-    init: init, attach: attach, update: update, renderAt: renderAt, png: png, pngSize: pngSize, hasPlaces: hasPlaces, view: viewNow,
+    init: init, attach: attach, update: update, renderAt: renderAt, png: png, pngSize: pngSize, hasPlaces: hasPlaces, ownAddress: ownAddress, view: viewNow,
     // A round of the traced target finished: its packet starts with the first snapshot that has it.
     round: onRound,
     setPaused: function (on) {

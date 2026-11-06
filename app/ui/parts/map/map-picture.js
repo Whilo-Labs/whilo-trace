@@ -31,7 +31,7 @@
     var d = new Date(WT.toMs || WT.nowMs || Date.now()), tr = WT.trace;
     var row = tr ? (WT.targets || []).filter(function (x) { return x.id === tr.target; })[0] : null;
     var dh = tr ? (tr.hops || []).filter(function (h) { return h.dest; })[0] : null;
-    var gone = !!(row && dh && dh.geo && dh.geo.level === 'own' && /^[0-9.]+$|:/.test(String(row.host)));
+    var gone = !!(row && ((dh && dh.geo && dh.geo.level === 'own' && /^[0-9.]+$|:/.test(String(row.host))) || MAP.ownAddress(row.host)));
     var host = row && !gone ? String(row.host).replace(/[^A-Za-z0-9.-]/g, '_') : 'route';
     return 'whilo-trace-map-' + host + '-' + d.getFullYear() + two(d.getMonth() + 1) + two(d.getDate()) + '-' + two(d.getHours()) + two(d.getMinutes()) + two(d.getSeconds());
   }
