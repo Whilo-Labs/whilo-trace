@@ -4801,7 +4801,7 @@ dependencies = [
 
 [[package]]
 name = "whilo-trace"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "mmdb-writer",
@@ -4818,7 +4818,7 @@ dependencies = [
 
 [[package]]
 name = "whilo-trace-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "whilo-trace-engine",
@@ -4827,7 +4827,7 @@ dependencies = [
 
 [[package]]
 name = "whilo-trace-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "dns-lookup",
  "libc",
@@ -4836,7 +4836,7 @@ dependencies = [
 
 [[package]]
 name = "whilo-trace-geo"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
  "maxminddb",
@@ -4850,7 +4850,7 @@ dependencies = [
 
 [[package]]
 name = "whilo-trace-store"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rusqlite",
  "serde",
