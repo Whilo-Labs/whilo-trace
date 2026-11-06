@@ -891,7 +891,14 @@ impl Core {
                 let rounds = lock(&self.reader)
                     .load_rounds(t.id, f.from_ms, f.to_ms)
                     .map_err(db)?;
-                let grid = Grid::build(&rounds, f.b, f.from_k, f.n);
+                let mut grid = Grid::build(&rounds, f.b, f.from_k, f.n);
+                if let Some(last) = rounds.last().filter(|_| !rounds.iter().any(|r| r.reached)) {
+                    grid.set_known_dest(
+                        lock(&self.reader)
+                            .dest_ttl_near(t.id, last.dst, f.from_ms, f.to_ms)
+                            .map_err(db)?,
+                    );
+                }
                 let c = compute(
                     self,
                     t,
@@ -1342,13 +1349,12 @@ impl Core {
             };
             let rounds = self.rounds_of(&data, tid, from_ms, to_ms)?;
             // No round reached the destination in the period: it is where the nearest round
-            // found it, as the screen takes it from the window.
-            let toward = if rounds.iter().any(|r| r.reached) {
-                None
-            } else {
-                lock(&self.reader)
-                    .dest_ttl_near(tid, from_ms, to_ms)
-                    .map_err(db)?
+            // found it, as on the screen.
+            let toward = match rounds.last() {
+                Some(last) if !rounds.iter().any(|r| r.reached) => lock(&self.reader)
+                    .dest_ttl_near(tid, last.dst, from_ms, to_ms)
+                    .map_err(db)?,
+                _ => None,
             };
             let hops = hop_stats_toward(&rounds, toward);
             let v = verdict(&rounds, &hops);
@@ -1368,19 +1374,12 @@ impl Core {
                             .and_then(|p| p.addr.as_ref())
                             .and_then(|a| a.parse().ok())
                     });
-                    let mut line = timeline(&rounds, Some(ttl), from_ms, to_ms, n, toward);
-                    // The misses of a silent hop say nothing about the path, as on the screen.
-                    if info.is_some_and(|h| h.status == HopStatus::Silent) {
-                        for b in &mut line {
-                            b.lost = 0;
-                            b.no_reply = 0;
-                        }
-                    }
                     PinnedLine {
                         ttl,
                         addr,
                         name: addr.and_then(|a| self.net.dns.name(a)),
-                        timeline: line,
+                        timeline: timeline(&rounds, Some(ttl), from_ms, to_ms, n, toward),
+                        silent: info.is_some_and(|h| h.status == HopStatus::Silent),
                     }
                 })
                 .collect();
@@ -1445,6 +1444,7 @@ impl Core {
                             addr: p.addr,
                             name: p.name.clone(),
                             timeline: p.timeline.clone(),
+                            silent: p.silent,
                         })
                         .collect(),
                 })
@@ -1952,13 +1952,13 @@ mod tests {
         let dir = temp_dir("outage");
         let db_path = dir.0.join("history.db");
         let now = now_ms();
-        let out_from = now - 120_000;
+        let out_from = now - 420_000;
         let ip = Ipv4Addr::new(10, 0, 0, 5);
         {
             let mut s = Store::open(&db_path).unwrap();
             let a = s.add_target("10.0.0.5").unwrap();
             s.set_paused(a, true).unwrap();
-            // A path of 5; for the last two minutes nothing past hop 2, kept as the monitor
+            // A path of 5; for the last seven minutes nothing past hop 2, kept as the monitor
             // keeps it: one silent slot after the last answer.
             for k in 0..240 {
                 let ts = now - 600_000 + k * 2500;
@@ -2041,6 +2041,12 @@ mod tests {
         let hops = snap.trace.unwrap().hops;
         assert_eq!(hops.len(), 5);
         assert!(hops[4].dest);
+        // A window inside the outage takes the destination from the rounds before it.
+        let mut r = req("5m", None);
+        r.trace = Some("t1".into());
+        let hops = core.snapshot(&r).unwrap().trace.unwrap().hops;
+        assert_eq!(hops.len(), 5);
+        assert!(hops[4].dest && !hops[2].dest, "{hops:?}");
         shut_down(core);
     }
 

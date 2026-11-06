@@ -40,7 +40,7 @@ pub struct MonitorConfig {
     pub max_ttl: u8,
     pub payload: u16,
     pub send_gap: Duration,
-    /// While the destination does not answer, how often a round goes to `max_ttl` instead of
+    /// While the destination keeps not answering, how often a round goes to `max_ttl` instead of
     /// stopping at the known length: the route may have grown past a router that keeps silent.
     pub full_round_every: Duration,
 }
@@ -264,8 +264,10 @@ struct Planner<F> {
     resolve_at: Option<Instant>,
     /// Where rounds can stop, learned from the rounds reported so far.
     path_len: Option<u8>,
-    /// From this time on a round goes the full depth: the destination has not answered since
-    /// `full_round_every` before it.
+    /// Rounds in a row that did not reach the destination.
+    lost_streak: u32,
+    /// With `LOST_BEFORE_FULL_ROUND` lost rounds in a row, a round goes the full depth from this
+    /// time on: `full_round_every` after the last round that reached it or went that deep.
     full_round_at: Instant,
     workers: Vec<Worker>,
     worker_ids: u64,
@@ -302,6 +304,7 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
             literal: literal.is_some(),
             resolve_at: if literal.is_some() { None } else { Some(now) },
             path_len: None,
+            lost_streak: 0,
             full_round_at: now + full_round_every,
             workers: Vec::new(),
             worker_ids: 0,
@@ -403,9 +406,12 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
         self.retire_idle(now, IDLE_WORKER);
         let Some(dst) = self.dst else { return };
         let Some(w) = self.free_worker() else { return };
-        // The destination did not answer for a while: look past the known length, the route
-        // may have grown behind a router that keeps silent.
-        let known = self.path_len.filter(|_| now < self.full_round_at);
+        // The destination keeps not answering: look past the known length, the route may have
+        // grown behind a router that keeps silent. Not after a single lost round: a full round
+        // reaches the destination by any of its deeper probes, and the loss would read lower.
+        let known = self
+            .path_len
+            .filter(|_| self.lost_streak < LOST_BEFORE_FULL_ROUND || now < self.full_round_at);
         if known.is_none() {
             self.full_round_at = now + self.cfg.full_round_every;
         }
@@ -451,13 +457,17 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
             Ok(samples) => {
                 let record = assemble(done.dst, done.ts_ms, samples);
                 // Rounds to an address the host no longer resolves to tell nothing about the path.
+                let short = stopped_short(&record, self.cfg.max_ttl.clamp(1, MAX_TTL));
                 if self.dst == Some(done.dst) {
                     self.path_len = next_path_len(self.path_len, &record);
                     if record.reached {
+                        self.lost_streak = 0;
                         self.full_round_at = Instant::now() + self.cfg.full_round_every;
+                    } else if !short {
+                        self.lost_streak += 1;
                     }
                 }
-                if !stopped_short(&record, self.cfg.max_ttl) {
+                if !short {
                     (self.on_event)(MonitorEvent::Round(record));
                 }
             }
@@ -492,6 +502,7 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
             Ok(ip) => {
                 if self.dst != Some(ip) {
                     self.path_len = None;
+                    self.lost_streak = 0;
                 }
                 self.dst = Some(ip);
                 self.resolve_at = Some(now + RESOLVE_EVERY);
@@ -600,6 +611,9 @@ fn work(id: u64, mut prober: Box<dyn Prober>, jobs: Receiver<Job>, done: Sender<
         }
     }
 }
+
+/// Rounds in a row without the destination before a round looks past the known length.
+const LOST_BEFORE_FULL_ROUND: u32 = 5;
 
 /// Where the next round can stop: at the destination, once it answered.
 pub(crate) fn next_path_len(known: Option<u8>, record: &RoundRecord) -> Option<u8> {
@@ -1141,6 +1155,37 @@ mod tests {
             );
             sleep(ms(20));
         }
+    }
+
+    #[test]
+    fn only_a_round_short_of_the_full_depth_can_have_stopped_short() {
+        let dst = Ipv4Addr::new(10, 0, 0, 9);
+        let expired = |ttl| HopSample {
+            ttl,
+            kind: ReplyKind::TimeExceeded,
+            addr: Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, ttl))),
+            rtt_us: Some(1000),
+        };
+        let loop_to = |len: u8| assemble(dst, 0, (1..=len).map(expired).collect());
+        assert!(stopped_short(&loop_to(4), 12), "known length 4");
+        assert!(!stopped_short(&loop_to(12), 12), "a loop on a full round");
+        // A silent slot at the end: the deepest probe did not expire.
+        let mut quiet: Vec<HopSample> = (1..4).map(expired).collect();
+        quiet.push(HopSample::lost(4, ReplyKind::Timeout));
+        assert!(!stopped_short(&assemble(dst, 0, quiet), 12));
+    }
+
+    #[test]
+    fn a_lost_round_now_and_then_does_not_bring_a_full_round() {
+        // Every third round lost at a long interval compared to the check: the rounds stay short,
+        // so the loss reads as it is.
+        let run = on_route(ms(1), |k| {
+            (Some(4), if k % 3 == 2 { Some(4) } else { None })
+        });
+        wait_rounds(&run, |r| r.len() >= 15);
+        run.handle.stop();
+        let ttls = run.max_ttls.lock().unwrap();
+        assert!(ttls[2..].iter().all(|&t| t == 4), "{ttls:?}");
     }
 
     #[test]

@@ -82,6 +82,8 @@ struct Acc {
     recv: u32,
     echo: u32,
     unreachable: u32,
+    /// No answer in a round that reached the destination.
+    missed_reached: u32,
     rtts: Vec<f64>,
     addrs: HashMap<IpAddr, u32>,
     last: Option<Option<f64>>,
@@ -146,6 +148,7 @@ pub fn hop_stats_toward(rounds: &[RoundRecord], toward: Option<u8>) -> Vec<HopSt
                     }
                     acc.last = Some(latency(h));
                 } else {
+                    acc.missed_reached += u32::from(r.reached);
                     acc.last = Some(None);
                 }
             }
@@ -162,6 +165,13 @@ fn finish(ttl: u8, acc: Acc, at_dest: bool) -> HopStats {
     let is_destination = at_dest && (acc.echo > 0 || acc.recv == 0);
     // At the destination, "unreachable" from the router before it is a lost round.
     let recv = acc.recv - if is_destination { acc.unreachable } else { 0 };
+    // Nor is a probe to this TTL lost in a round that still reached the destination a TTL deeper.
+    let sent = acc.sent
+        - if is_destination {
+            acc.missed_reached
+        } else {
+            0
+        };
     let rtts = acc.rtts;
     let mut addrs: Vec<(IpAddr, u32)> = acc.addrs.into_iter().collect();
     addrs.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
@@ -173,13 +183,13 @@ fn finish(ttl: u8, acc: Acc, at_dest: bool) -> HopStats {
         ttl,
         addr: addrs.first().map(|a| a.0),
         other_addrs: addrs.len().saturating_sub(1),
-        sent: acc.sent,
+        sent,
         recv,
         unreachable: acc.unreachable,
-        loss_pct: if acc.sent == 0 {
+        loss_pct: if sent == 0 {
             0.0
         } else {
-            100.0 * (acc.sent - recv) as f64 / acc.sent as f64
+            100.0 * (sent - recv) as f64 / sent as f64
         },
         last_ms: acc.last.flatten(),
         avg_ms: avg,
@@ -250,18 +260,26 @@ fn classify(rows: &mut [HopStats]) {
         return;
     }
     let mut origin = dest;
+    let mut limited = false;
     for j in (0..dest).rev() {
         match rows[j].status {
             // A router that says the destination is unreachable is where those rounds end.
-            HopStatus::Lossy | HopStatus::Unreachable => origin = j,
+            HopStatus::Lossy | HopStatus::Unreachable => {
+                origin = j;
+                limited = false;
+            }
             // Its own misses tell nothing about the path: a silent router, or one that limits
             // its answers, may sit inside the loss or before it. The walk goes on past it, and
             // only a hop that shows the loss becomes the start.
-            HopStatus::Silent | HopStatus::RateLimited => {}
+            HopStatus::Silent => {}
+            HopStatus::RateLimited => limited = true,
             _ => break,
         }
     }
-    rows[origin].loss_origin = true;
+    // Only limiting routers before the destination: where the loss starts cannot be told.
+    if !(origin == dest && limited) {
+        rows[origin].loss_origin = true;
+    }
 }
 
 fn margin(loss_pct: f64) -> f64 {
@@ -760,9 +778,21 @@ mod tests {
     }
 
     #[test]
+    fn a_deeper_round_alone_is_not_loss_at_the_destination() {
+        // Every round reached it; in one the probe to its TTL got lost and the next one answered.
+        let mut r: Vec<RoundRecord> = (0..20).map(|k| reached_at(k, 9)).collect();
+        r[0] = reached_at(0, 10);
+        r[0].hops[8] = HopSample::lost(9, ReplyKind::Timeout);
+        let h = hop_stats(&r);
+        assert_eq!((h[8].sent, h[8].recv), (19, 19));
+        assert!(h[8].is_destination && h[8].status == HopStatus::Ok, "{h:?}");
+        assert!(!h.iter().any(|x| x.loss_origin), "{h:?}");
+    }
+
+    #[test]
     fn a_router_that_limits_its_answers_is_not_where_the_loss_starts() {
         // Hop 2 answers now and then, hop 3 never, hop 4 less than half the time and in every
-        // round the destination lost: the loss starts after it.
+        // round the destination lost: neither of them is where the loss starts.
         let r: Vec<RoundRecord> = (0..1000)
             .map(|k| {
                 let lost = k % 20 == 3;
@@ -795,8 +825,8 @@ mod tests {
         assert_eq!(h[1].status, HopStatus::RateLimited, "{h:?}");
         assert_eq!(h[2].status, HopStatus::Silent, "{h:?}");
         assert_eq!(h[3].status, HopStatus::RateLimited, "{h:?}");
-        let origin: Vec<u8> = h.iter().filter(|x| x.loss_origin).map(|x| x.ttl).collect();
-        assert_eq!(origin, [5], "{h:?}");
+        assert!(!h.iter().any(|x| x.loss_origin), "nobody to blame: {h:?}");
+        assert!(h[4].is_destination && h[4].status == HopStatus::Lossy);
     }
 
     #[test]

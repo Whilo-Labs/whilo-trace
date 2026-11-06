@@ -40,6 +40,9 @@ pub struct PinnedLine {
     pub addr: Option<IpAddr>,
     pub name: Option<String>,
     pub timeline: Vec<Bucket>,
+    /// The hop kept silent in the period: its misses say nothing about the path, so its chart has
+    /// no marks, as on the screen. The numbers stay in the JSON.
+    pub silent: bool,
 }
 
 /// A target with the hops pinned from it.
@@ -137,7 +140,7 @@ pub fn round_interval_s(rounds: &[RoundRecord], fallback: f64) -> f64 {
         .filter(|g| *g > 0)
         .collect();
     gaps.sort_unstable();
-    gaps.get(gaps.len() / 2)
+    gaps.get(gaps.len().saturating_sub(1) / 2)
         .map_or(fallback, |g| *g as f64 / 1000.0)
 }
 
@@ -622,11 +625,23 @@ pub fn document_html(d: &Document) -> String {
                 w.hop_chart,
                 p.ttl,
                 esc(&who),
-                svg_timeline_in(&p.timeline, d.from_ms, d.to_ms, d.tz_offset_min, ru)
+                if p.silent {
+                    let mut unmarked = p.timeline.clone();
+                    for b in &mut unmarked {
+                        b.lost = 0;
+                        b.no_reply = 0;
+                    }
+                    svg_timeline_in(&unmarked, d.from_ms, d.to_ms, d.tz_offset_min, ru)
+                } else {
+                    svg_timeline_in(&p.timeline, d.from_ms, d.to_ms, d.tz_offset_min, ru)
+                }
             );
         }
         let partial = |b: &Bucket| b.lost == 0 && b.no_reply > 0;
-        if s.pinned.iter().any(|p| p.timeline.iter().any(partial)) {
+        if s.pinned
+            .iter()
+            .any(|p| !p.silent && p.timeline.iter().any(partial))
+        {
             let _ = write!(
                 body,
                 "<div class=\"legend\"><i style=\"background:{PARTIAL}\"></i>{}</div>",
@@ -1006,7 +1021,7 @@ fn fmt_duration(ms: i64, ru: bool) -> String {
     let s = ms / 1000;
     match s {
         s if s < 120 => format!("{s} {}", pick(ru, "с", "s")),
-        s if s < 7200 => format!("{} {}", s / 60, pick(ru, "мин", "min")),
+        s if s < 7200 => format!("{} {}", (s + 30) / 60, pick(ru, "мин", "min")),
         s => format!("{} {}", num(s as f64 / 3600.0, 1, ru), pick(ru, "ч", "h")),
     }
 }

@@ -708,6 +708,7 @@ fn the_destination_of_an_outage_comes_from_the_nearest_round_that_reached_it() {
         let mut r = rounds(&vec!["+"; len as usize], 1000).remove(0);
         r.ts_ms = ts;
         r.reached = reached;
+        r.dst = ip(1);
         r
     };
     s.insert_round(id, &at(10 * day, 4, true)).unwrap();
@@ -715,13 +716,59 @@ fn the_destination_of_an_outage_comes_from_the_nearest_round_that_reached_it() {
     s.insert_round(id, &at(10 * day + 2000, 2, false)).unwrap();
     s.insert_round(id, &at(10 * day + 9000, 6, true)).unwrap();
     // The nearest before the period wins, a lost round does not count.
-    let near = |from, to| s.dest_ttl_near(id, from, to).unwrap();
+    let dst = ip(1);
+    let near = |from, to| s.dest_ttl_near(id, dst, from, to).unwrap();
     assert_eq!(near(10 * day + 5000, 10 * day + 6000), Some(5));
     // Nothing before it: the nearest after.
     assert_eq!(near(10 * day - 1000, 10 * day), Some(4));
     // More than a day away on both sides.
     assert_eq!(near(12 * day, 13 * day), None);
     assert_eq!(near(8 * day, 9 * day - 1), None);
+    // Rounds to another address tell nothing about this one.
+    assert_eq!(
+        s.dest_ttl_near(id, ip(9), 10 * day + 5000, 10 * day + 6000)
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn a_window_inside_an_outage_knows_the_destination_from_before_it() {
+    // A path of 4 for 20 rounds, then nothing past hop 2, kept as the monitor keeps it.
+    let reached = rounds(&["+"; 4], 1000).remove(0);
+    let cut: Vec<RoundRecord> = (0..60)
+        .map(|k| {
+            let mut r = reached.clone();
+            r.ts_ms = k * 1000;
+            if k >= 20 {
+                r.hops.truncate(3);
+                r.hops[2] = HopSample::lost(3, ReplyKind::Timeout);
+                r.path_len = 3;
+                r.reached = false;
+            }
+            r
+        })
+        .collect();
+    let mut h = History::new(1_000_000, 0);
+    for x in &cut {
+        h.push(x.clone());
+    }
+    // The last 30 s are all outage: the rows go on to the destination, and it is lost there.
+    let w = h.live_window(1000, 30, 30, 0);
+    let hops = w.hops();
+    assert_eq!(hops.len(), 4);
+    assert!(hops[3].is_destination && hops[3].recv == 0, "{hops:?}");
+    assert!(!hops[2].is_destination);
+    assert_eq!(w.stats(Pick::Hop(4), w.all()).sent, 30);
+    assert_eq!(w.dest_ttl(), Some(4));
+    // A window with no round that ever reached it stays as it was.
+    let mut never = History::new(1_000_000, 0);
+    for x in &cut[20..] {
+        never.push(x.clone());
+    }
+    let w = never.live_window(1000, 30, 30, 0);
+    assert_eq!(w.hops().len(), 3);
+    assert_eq!(w.dest_ttl(), Some(3));
 }
 
 #[test]
@@ -759,6 +806,7 @@ fn a_pinned_hop_that_misses_while_the_destination_answers_is_amber_not_red() {
                 addr: Some(ip(1)),
                 name: None,
                 timeline: hop,
+                silent: false,
             }],
         }],
         from_ms: 0,
@@ -1033,6 +1081,7 @@ fn a_report_covers_several_targets_in_the_window_language() {
                     addr: Some(ip(1)),
                     name: Some("router".into()),
                     timeline: timeline(&a, Some(1), 0, 8000, 8, None),
+                    silent: false,
                 }],
             },
             Section {

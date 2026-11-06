@@ -360,10 +360,11 @@ fn export(
         return Err(format!("no rounds for {host} in the last {last}").into());
     }
     // No round reached the destination in the period: it is where the nearest round found it.
-    let toward = if rounds.iter().any(|r| r.reached) {
-        None
-    } else {
-        store.dest_ttl_near(target.id, from_ms, to_ms)?
+    let toward = match rounds.last() {
+        Some(last) if !rounds.iter().any(|r| r.reached) => {
+            store.dest_ttl_near(target.id, last.dst, from_ms, to_ms)?
+        }
+        _ => None,
     };
     let hops = hop_stats_toward(&rounds, toward);
     let v = verdict(&rounds, &hops);

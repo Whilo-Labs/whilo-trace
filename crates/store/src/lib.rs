@@ -499,17 +499,27 @@ impl Store {
     }
 
     /// The TTL of the destination around a period none of whose rounds reached it: where the
-    /// nearest round that did ended, up to a day away, looking before the period first.
-    pub fn dest_ttl_near(&self, target_id: i64, from_ms: i64, to_ms: i64) -> Result<Option<u8>> {
+    /// nearest round to that address that did ended, up to a day away, looking before the period
+    /// first.
+    pub fn dest_ttl_near(
+        &self,
+        target_id: i64,
+        dst: IpAddr,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> Result<Option<u8>> {
         const DAY_MS: i64 = 86_400_000;
+        let dst = dst.to_string();
         let before = self
             .conn
             .prepare_cached(
                 "SELECT path_len FROM rounds
-                 WHERE target_id = ?1 AND ts_ms >= ?2 AND ts_ms < ?3 AND reached = 1
+                 WHERE target_id = ?1 AND ts_ms >= ?2 AND ts_ms < ?3 AND reached = 1 AND dst = ?4
                  ORDER BY ts_ms DESC LIMIT 1",
             )?
-            .query_row(params![target_id, from_ms - DAY_MS, from_ms], |r| r.get(0))
+            .query_row(params![target_id, from_ms - DAY_MS, from_ms, dst], |r| {
+                r.get(0)
+            })
             .optional()?;
         if before.is_some() {
             return Ok(before);
@@ -517,10 +527,10 @@ impl Store {
         self.conn
             .prepare_cached(
                 "SELECT path_len FROM rounds
-                 WHERE target_id = ?1 AND ts_ms >= ?2 AND ts_ms < ?3 AND reached = 1
+                 WHERE target_id = ?1 AND ts_ms >= ?2 AND ts_ms < ?3 AND reached = 1 AND dst = ?4
                  ORDER BY ts_ms LIMIT 1",
             )?
-            .query_row(params![target_id, to_ms, to_ms + DAY_MS], |r| r.get(0))
+            .query_row(params![target_id, to_ms, to_ms + DAY_MS, dst], |r| r.get(0))
             .optional()
     }
 

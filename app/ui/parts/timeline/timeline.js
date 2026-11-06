@@ -338,7 +338,8 @@
     var s = WT.statuses[k], p = probeOf(tr.probe).label, hop = !!(tr.src && tr.src.hopOf);
     var hr = !hop && s.hint_target_ru ? s.hint_target_ru : s.hint_ru || '', he = !hop && s.hint_target_en ? s.hint_target_en : s.hint_en || '';
     // No hint «no loss» next to loss under the threshold, as in the summary.
-    var hint = (k === 'loss' && !hop) || (k === 'ok' && tr.src && WT.stats(tr.src).lossPct > 0) ? '' : (EN ? he : hr).replace('{probe}', p);
+    var seen = k === 'ok' && tr.src ? WT.stats(tr.src) : null;
+    var hint = (k === 'loss' && !hop) || (seen && seen.lossPct + (seen.noReplyPct || 0) > 0) ? '' : (EN ? he : hr).replace('{probe}', p);
     name = L(s.ru, s.en).replace('{probe}', p);
     // next to the «paused» chip a long status may be cut short (timeline.css): its hint starts with the full name
     if (pz && hint) hint = name.charAt(0).toUpperCase() + name.slice(1) + '. ' + hint;

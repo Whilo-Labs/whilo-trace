@@ -284,14 +284,15 @@ a missing `home` key leaves it as it is, `"home": null` clears it, and a point o
 
 Returns `{ "dir": "C:\\Users\\...\\Documents\\Whilo Trace\\whilo-trace-20261027-160000", "files": ["report.html", ...] }`.
 
-- The period is `[fromMs, toMs)`, like the window.
+- The period is `[fromMs, toMs)`, like the window; a `toMs` later than now (a live window ends with its
+  bucket) is cut to now.
 - `findings` are written into the report exactly as the dialog shows them, in the interface language;
   `[]` (or no key) writes no findings. The engine's own findings, in English, are only for the command
   line (`whilo-trace-cli report`).
 - `dir`: the folder the user picked, `null` for `Documents/Whilo Trace`. The report always goes into a
   new folder inside it, `<name>-<YYYYMMDD-HHMMSS>`, and the answer's `dir` is that new folder. `<name>`
-  is the target's host when every row belongs to one target, else `whilo-trace`; the time is `toMs` in
-  `tzOffsetMin`. A folder that exists already is not overwritten: the next one is `<name>-<time>-2`.
+  is the target's host when every row belongs to one target, else `whilo-trace`; the time is the end of
+  the period in `tzOffsetMin`. A folder that exists already is not overwritten: the next one is `<name>-<time>-2`.
 - `files`: what was written, of `report.html`, `timeline.png` (only with `pngBase64`), `hops.csv` and
   `samples.csv` (`csv`), `report.json`, and last `map.png` (only with `mapPngBase64`).
 - `mapPngBase64`: the route map drawn by the interface, a PNG as base64 or a `data:` URL; optional. The

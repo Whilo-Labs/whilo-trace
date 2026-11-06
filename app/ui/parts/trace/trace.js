@@ -242,28 +242,35 @@
       if (main) { if (status !== 'silent' && hp.series) src = hp; } else if (hp.dest) src = row;
       var s = src ? statsOf(src, idx, rs) : null;
       if (idx && s) status = periodStatus(status, s);
+      // A hop silent over the window has no numbers, yet its status over the period comes all the same.
+      else if (idx && rs && main && hp.rangeStats && hp.rangeStats.status) status = hp.rangeStats.status;
       return {
         ttl: hp.ttl, addr: hp.addr || null, name: hp.name || null, dest: !!hp.dest, status: status,
         src: src, s: s, full: src ? WT.stats(src) : null, by: hp.byProbe || {}, pin: pins[hp.ttl] || null, pinned: !!pins[hp.ttl], origin: false,
         geo: hp.geo || null, // place of the hop for the route map (parts/map)
       };
     });
-    // Where the loss starts: the core marks it for the window; for a picked period the engine rule runs here:
-    // from the destination back while the loss carries on, through a router that says the destination is
-    // unreachable; a silent router or one that limits its answers tells nothing and is passed over.
+    // Where the loss starts: the core marks it for the window and for a picked period. Until its numbers for the
+    // period come (and in the mock) its rule runs here: from the destination back while the loss carries on, through
+    // a router that says the destination is unreachable; a silent router or one that limits its answers tells nothing
+    // and is passed over, and when only such routers stand before the destination the start cannot be told.
     if (main && !idx && tr.hops.some(function (hp) { return 'origin' in hp; })) {
       hops.forEach(function (h, i) { h.origin = !!tr.hops[i].origin; });
+    } else if (main && idx && rs && row.rangePath) {
+      var po = row.rangePath.origin;
+      hops.forEach(function (h) { h.origin = !!po && h.ttl === po.ttl; });
     } else {
       var di = hops.length - 1;
       hops.forEach(function (h, i) { if (h.dest) di = i; });
       if (hops[di] && hops[di].status === 'loss') {
-        var oi = di;
+        var oi = di, limited = false;
         for (var j = di - 1; j >= 0; j--) {
           var hj = hops[j].status;
-          if (hj === 'loss' || hj === 'unreachable') oi = j;
-          else if (hj !== 'silent' && hj !== 'partial') break;
+          if (hj === 'loss' || hj === 'unreachable') { oi = j; limited = false; }
+          else if (hj === 'partial') limited = true;
+          else if (hj !== 'silent') break;
         }
-        hops[oi].origin = true;
+        if (!(oi === di && limited)) hops[oi].origin = true;
       }
     }
     // Scale of the latency band over the whole window: it does not jump when a period is picked.
@@ -1083,7 +1090,7 @@
     var src = hp.src;
     if (!src) { var p = stP(hp.status, probe); return '<span class="tp-o">' + esc(L(p.ru, p.en)) + '</span>'; }
     var lost = !!setOf(src.loss)[i], part = !lost && !!setOf(src.partial)[i], v = WT.series(src.series)[i], has = v != null;
-    var val = has ? msr(v) : lost || part ? { ru: 'нет ответа', en: 'no reply' } : hp.status === 'unreachable' ? { ru: 'ответ без задержки', en: 'answer without latency' } : { ru: 'нет данных', en: 'no data' };
+    var val = has ? msr(v) : lost || part ? { ru: 'нет ответа', en: 'no reply' } : hp.status === 'unreachable' && src.sentN && src.sentN[i] > 0 ? { ru: 'ответ без задержки', en: 'answer without latency' } : { ru: 'нет данных', en: 'no data' };
     // A node that answers only some probes: these are replies, not loss («Ответы 1 из 2»), as in the stack hint.
     var n, c = countAt(src, i);
     if (c && part) n = mk('partial') + esc(L((c.n - c.k) + ' из ' + c.n, (c.n - c.k) + ' of ' + c.n));

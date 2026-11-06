@@ -220,6 +220,8 @@ pub struct Grid {
     covered_from: i64,
     /// Last time a snapshot used the grid, for eviction.
     used_ms: i64,
+    /// The destination known from around the window, for when none of its rounds reached it.
+    known_dest: Option<u8>,
 }
 
 impl Grid {
@@ -237,6 +239,7 @@ impl Grid {
             keep: keep.max(1),
             covered_from: from_k,
             used_ms: 0,
+            known_dest: None,
         };
         for r in rounds {
             g.add(r);
@@ -284,7 +287,13 @@ impl Grid {
     pub fn window(&self, from_k: i64, n: usize) -> Window<'_> {
         Window {
             slots: (0..n as i64).map(|i| self.slot(from_k + i)).collect(),
+            known_dest: self.known_dest,
         }
+    }
+
+    /// Where the destination is, as far as known from around the window.
+    pub fn set_known_dest(&mut self, ttl: Option<u8>) {
+        self.known_dest = ttl;
     }
 }
 
@@ -365,6 +374,7 @@ pub enum Pick {
 /// N consecutive buckets of a grid; `None` where the grid has nothing.
 pub struct Window<'a> {
     slots: Vec<Option<&'a Slot>>,
+    known_dest: Option<u8>,
 }
 
 impl<'a> Window<'a> {
@@ -432,10 +442,12 @@ impl<'a> Window<'a> {
     }
 
     /// The destination that rounds which ended before it are counted toward (`Slot::lost_before`):
-    /// where the rounds of `r` reached it, else where those of the whole window did.
+    /// where the rounds of `r` reached it, else where those of the whole window did, else where
+    /// it is known to be from around the window.
     fn toward_in(&self, r: Range<usize>) -> Option<u8> {
         self.reached_ttl_in(r)
             .or_else(|| self.reached_ttl_in(self.all()))
+            .or(self.known_dest)
     }
 
     /// A line's cell in a slot, counted as the engine's `outcome` counts the rounds.
@@ -534,6 +546,7 @@ impl<'a> Window<'a> {
         let mut rows: Vec<(HopInfo, f64)> = (1..=max_ttl)
             .map(|ttl| {
                 let (mut sent, mut recv, mut echo, mut unreachable) = (0u32, 0u32, 0u32, 0u32);
+                let mut missed_reached = 0u32;
                 let mut addrs: Vec<(IpAddr, u32)> = Vec::new();
                 for c in self
                     .slots_in(r.clone())
@@ -543,6 +556,7 @@ impl<'a> Window<'a> {
                     recv += c.recv;
                     echo += c.echo;
                     unreachable += c.unreachable;
+                    missed_reached += c.lost_partial();
                     if let Some(a) = c.addr {
                         match addrs.iter_mut().find(|(x, _)| *x == a) {
                             Some(e) => e.1 += c.recv,
@@ -556,6 +570,8 @@ impl<'a> Window<'a> {
                 // destination "unreachable" is a lost round, as in `hop_stats`.
                 let is_destination = Some(ttl) == dest_ttl && (echo > 0 || recv == 0);
                 let recv = recv - if is_destination { unreachable } else { 0 };
+                // Nor is a probe lost in a round that still reached it a TTL deeper.
+                let sent = sent - if is_destination { missed_reached } else { 0 };
                 let loss_pct = pct(sent - recv, sent);
                 (
                     HopInfo {
@@ -628,14 +644,21 @@ fn classify(rows: &mut [(HopInfo, f64)]) {
         return;
     }
     let mut origin = dest;
+    let mut limited = false;
     for j in (0..dest).rev() {
         match rows[j].0.status {
-            HopStatus::Lossy | HopStatus::Unreachable => origin = j,
-            HopStatus::Silent | HopStatus::RateLimited => {}
+            HopStatus::Lossy | HopStatus::Unreachable => {
+                origin = j;
+                limited = false;
+            }
+            HopStatus::Silent => {}
+            HopStatus::RateLimited => limited = true,
             _ => break,
         }
     }
-    rows[origin].0.loss_origin = true;
+    if !(origin == dest && limited) {
+        rows[origin].0.loss_origin = true;
+    }
 }
 
 /// `part` is a notable share of `all`: at least `LOSS_NOTABLE_PCT`.
@@ -782,6 +805,7 @@ impl History {
     /// `from_k`. Built from what is in memory, so right after start, while the last day is still
     /// being read from disk, it may miss older rounds; `prepend` then drops it.
     pub fn live_window(&mut self, b: i64, from_k: i64, n: usize, now: i64) -> Window<'_> {
+        let near = self.dest_near(from_k * b, (from_k + n as i64) * b);
         let i = match self
             .grids
             .iter()
@@ -805,7 +829,32 @@ impl History {
         };
         let g = &mut self.grids[i];
         g.used_ms = now;
+        g.known_dest = near;
         g.window(from_k, n)
+    }
+
+    /// Where the destination is around a period none of whose rounds may have reached it: where
+    /// the nearest round to the same address that did ended, up to a day away, looking before the
+    /// period first (`Store::dest_ttl_near` for what is not in memory).
+    pub fn dest_near(&mut self, from_ms: i64, to_ms: i64) -> Option<u8> {
+        const DAY_MS: i64 = 86_400_000;
+        let all = self.rounds.make_contiguous();
+        let a = all.partition_point(|r| r.ts_ms < from_ms);
+        let z = all.partition_point(|r| r.ts_ms < to_ms);
+        let dst = all[..z].last().map(|r| r.dst)?;
+        let near = |r: &&RoundRecord| r.reached && r.dst == dst;
+        all[..a]
+            .iter()
+            .rev()
+            .take_while(|r| r.ts_ms >= from_ms - DAY_MS)
+            .find(near)
+            .or_else(|| {
+                all[z..]
+                    .iter()
+                    .take_while(|r| r.ts_ms < to_ms + DAY_MS)
+                    .find(near)
+            })
+            .map(|r| r.path_len)
     }
 
     /// Buckets of the past: built from memory once per window and kept until another one is
@@ -819,10 +868,12 @@ impl History {
         if fresh {
             let from_ms = from_k * b;
             let to_ms = (from_k + n as i64) * b;
+            let near = self.dest_near(from_ms, to_ms);
             let all = self.rounds.make_contiguous();
             let a = all.partition_point(|r| r.ts_ms < from_ms);
             let z = all.partition_point(|r| r.ts_ms < to_ms);
-            let grid = Grid::build(&all[a..z.max(a)], b, from_k, n);
+            let mut grid = Grid::build(&all[a..z.max(a)], b, from_k, n);
+            grid.known_dest = near;
             self.past = Some((b, from_k, n, grid));
         }
         self.past.as_ref().map(|(_, _, _, g)| g.window(from_k, n))

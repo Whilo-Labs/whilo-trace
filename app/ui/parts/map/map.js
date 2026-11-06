@@ -1725,7 +1725,7 @@
   // Any other hop, or the destination, whose place is in the home city is shown at the country level as well (its
   // country's label point, no city, no name; a destination also loses its name in the header): a later operator's
   // router in your city, or a destination after provider hops without an AS number, would name the city. In the home
-  // city: the automatic home's city under any of its names (sameCity) and its country, or, for any home, within HOME_KM
+  // city: the automatic home's city under its names (sameCity) and its country, or, for any home, within HOME_KM
   // of the real home point (the database also names parts of a city on their own: Badamdar and Khojasan are in Baku).
   // Such places say no «известна только страна»: the database knows the city. Their addresses stay.
   function masked(inp) {
@@ -1766,7 +1766,7 @@
     // The header: no second label (reverse name or address) for such a destination; a hidden one typed as an address
     // is not written either.
     var tg = inp.m.target, dh = hops.filter(function (x) { return x.dest; })[0] || null;
-    var gone = !!(dh && hide[dh.ttl]) || ownAddress(tg && tg.host);
+    var gone = !!(dh && hide[dh.ttl]) || ownAddress(tg && tg.host) || ownAddress(tg && tg.name);
     var dc = !!(dh && out[hops.indexOf(dh)].cityHidden);
     if (tg && (dc || gone)) {
       tg = Object.assign({}, tg, { name: null });

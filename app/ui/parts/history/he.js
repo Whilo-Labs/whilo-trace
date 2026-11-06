@@ -741,6 +741,7 @@
     if (b <= a) return ['Начало периода должно быть раньше конца', 'The period must start before it ends'];
     if (b - a > DAY) return ['Период не длиннее 24 ч', 'The period can be 24 h at most'];
     if (b > nowMs() + MIN) return ['Конец периода позже текущего момента', 'The period ends after now'];
+    if (a >= nowMs()) return ['Начало периода позже текущего момента', 'The period starts after now'];
     o.custom = [a, b];
     return null;
   }
@@ -898,7 +899,9 @@
       var p = traceRows(o).probes.filter(function (q) { return !o.off[q.id]; })[0], t = p && (rowData(o, p.id) || p);
       if (t) { var c = cnt(roundsOf(t, statsOf(o, t), r), ['раунд', 'раунда', 'раундов'], ['round', 'rounds']); x[0] += ' · ' + c[0]; x[1] += ' · ' + c[1]; }
     }
-    return '<span class="rp-sum-t">' + L(rangeText(r[0], r[1], o.tz, false), rangeText(r[0], r[1], o.tz, true), 'num') + L(x[0], x[1], 'rp-aside') + '</span>';
+    // The core ends a report no later than now.
+    var end = Math.min(r[1], Math.max(r[0] + 1, nowMs()));
+    return '<span class="rp-sum-t">' + L(rangeText(r[0], end, o.tz, false), rangeText(r[0], end, o.tz, true), 'num') + L(x[0], x[1], 'rp-aside') + '</span>';
   }
   function customLine(o) {
     var ph = pick('ДД.ММ.ГГГГ ЧЧ:ММ', 'YYYY-MM-DD HH:MM');
@@ -968,7 +971,7 @@
     var base = hosts.length === 1 ? hosts[0].replace(/[^A-Za-z0-9.-]/g, '_') : 'whilo-trace';
     // The core marks a report of the simulated network and ends the period no later than now.
     var sim = WT.geo && WT.geo.state === 'simulated' ? '-simulated' : '';
-    return base + sim + '-' + stamp(Math.min(r[1], Date.now()), o.tz);
+    return base + sim + '-' + stamp(Math.min(r[1], nowMs()), o.tz);
   }
   function pathOf(o) {
     var name = folderName(o);
@@ -1031,8 +1034,8 @@
   }
   // What was saved: the target and probe types (trace screen) or the number of targets and hops (main screen), and the period.
   function savedWhat(o) {
-    var r = periodRange(o), tz = ' (' + tzLabel(o, false).split(',')[0] + ')';
-    var when = [rangeText(r[0], r[1], o.tz, false) + tz, rangeText(r[0], r[1], o.tz, true) + tz];
+    var r = periodRange(o), tz = ' (' + tzLabel(o, false).split(',')[0] + ')', end = Math.min(r[1], Math.max(r[0] + 1, nowMs()));
+    var when = [rangeText(r[0], end, o.tz, false) + tz, rangeText(r[0], end, o.tz, true) + tz];
     if (o.from === 'trace') {
       var t = traceRows(o).t, labels = lines(o).filter(function (x) { return !x.hopOf; }).map(probeLabel);
       var head = t ? t.host + (labels.length ? ', ' : '') : '';

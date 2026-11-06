@@ -574,7 +574,7 @@
       // at a target "loss" is explained by the numbers next to it; hops and other statuses get the hint,
       // except "no loss" next to loss under the threshold
       var tg = !t.hopOf && st.hint_target_ru;
-      if ((t.hopOf || k !== 'loss') && !(k === 'ok' && s.lossPct > 0) && st.hint_ru) {
+      if ((t.hopOf || k !== 'loss') && !(k === 'ok' && s.lossPct + (s.noReplyPct || 0) > 0) && st.hint_ru) {
         hint = L(tg ? st.hint_target_ru : st.hint_ru, tg ? st.hint_target_en : st.hint_en).replace('{probe}', p);
       }
       if (partialOf(t)) {
