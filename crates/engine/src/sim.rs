@@ -8,7 +8,7 @@
 //! | Word | Path |
 //! |---|---|
 //! | `loss` | loss on the path from hop 7: a quarter of the rounds lost from there on |
-//! | `flaky` | loss on the path from hop 3: a third of the rounds, 70 seconds in every 5 minutes |
+//! | `flaky` | loss on the path from hop 3: 35% of the rounds, 70 seconds in every 5 minutes |
 //! | `down` | the destination never answers, nothing does after a few hops |
 //! | `unreachable` | a router says the destination is unreachable |
 //! | `silent` | a router on the way never answers |
@@ -17,7 +17,8 @@
 //! | `jitter` | latency spikes from a hop on |
 //!
 //! A word counts when it is a whole part of the name between dots or hyphens: `loss.example`,
-//! `my-loss-host.test`, but not `lossless.example`; the first word of the table wins. Any other
+//! `my-loss-host.test`, but not `lossless.example`; of several words `down` and `unreachable`
+//! win, then the order of the table. Any other
 //! name or address gets a mix of its own, the same on every run. Addresses of the home network
 //! and loopback are one hop away, the provider's carrier-grade NAT two; addresses in
 //! 192.0.2.0/24 behave as `down`. Names ending in `.invalid` do not resolve, and IPv6 addresses

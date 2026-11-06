@@ -186,7 +186,8 @@ resumes it, then at its saved interval.
   interface does not compute its own.
 - `path`: short summary of the route for target rows: route length, the hop where loss starts, hops silent
   for this probe type, hops that answer only some probes, routers that say the destination is unreachable
-  (`unreachable`, as `origin`: ttl and address; whole window).
+  (`unreachable`, as `origin`: ttl and address; whole window). `rangePath`: the same over the picked
+  period, on target rows with `rangeStats`.
 
 ### Trace
 
@@ -249,6 +250,8 @@ resumes it, then at its saved interval.
   destination answered. Red is only for loss on the path. A round that ended before the hop on its way to
   the destination (see `stats.sent`) is loss on the path there, and so is "destination unreachable" from
   the router before the destination at the destination's TTL.
+- A round that stopped at the known length and whose deepest probe expired on the way (the route got
+  longer) is not reported at all: it could not have reached the destination and says nothing about loss.
 - The latency line goes through replies only (`null` buckets break it).
 - Silent hop: a hop that never answers in the window while a later hop answers is `silent`. Its `series`,
   `lo`, `hi` are all `null`, it has no `loss` or `partial` marks, its `lossPct` and `noReplyPct` are 0
