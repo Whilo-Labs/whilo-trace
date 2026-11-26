@@ -229,8 +229,62 @@
       [['ru', 'Русский'], ['en', 'English']].map(function (l) {
         return '<button type="button" data-lang-set="' + l[0] + '" aria-pressed="' + (lang === l[0]) + '">' + T(l[1], l[1]) + '</button>';
       }).join('') + '</div></div>';
+    h += loadBlock();
+    h += historyBlock();
     h += geoBlock();
     return h + '</div>';
+  }
+
+  // ---------- Probes a second of all targets (settings.probeCap) and the history on disk (settings.keepDays) ----------
+  var CAPS = [25, 50, 100, 200];
+  var KEEPS = [[7, '7 дн.', '7 d'], [30, '30 дн.', '30 d'], [90, '90 дн.', '90 d'], [365, 'год', '1 yr'], [0, 'всегда', 'always']];
+  function curCap() { var v = settings().probeCap; return CAPS.indexOf(v) >= 0 ? v : 50; }
+  function curKeep() { var v = settings().keepDays; return [0, 7, 30, 90, 365].indexOf(v) >= 0 ? v : 30; }
+  function loadBlock() {
+    var cap = curCap();
+    return '<div class="wth-set" data-cap-block><div class="wth-set-label">' + T('Нагрузка на сеть', 'Network load') + '</div>' +
+      '<p class="wth-hint">' + T('Пакетов в секунду на все цели вместе', 'Packets a second for all targets together') + '</p>' +
+      '<div class="seg" role="group"' + A('aria-label', 'Пакетов в секунду на все цели', 'Packets a second for all targets') + '>' +
+      CAPS.map(function (c) { return '<button type="button" data-cap-set="' + c + '" aria-pressed="' + (c === cap) + '">' + T(String(c), String(c)) + '</button>'; }).join('') + '</div>' +
+      '<p class="wth-hint">' + T('Раунды сверх потолка не отправляются: на графике это пропуск, а не потери. Домашний роутер, которого засыпают пробами, может сам начать их терять.',
+        'Rounds over the ceiling are not sent: a gap on the chart, not loss. A home router flooded with probes can start dropping them itself.') + '</p></div>';
+  }
+  function sizeLine() {
+    var mb = (WT.historyBytes || 0) / 1048576, gb = mb >= 1024;
+    var ru = gb ? (mb / 1024).toFixed(1).replace('.', ',') + ' ГБ' : mb < 1 ? 'меньше 1 МБ' : Math.round(mb) + ' МБ';
+    var en = gb ? (mb / 1024).toFixed(1) + ' GB' : mb < 1 ? 'under 1 MB' : Math.round(mb) + ' MB';
+    return { ru: 'Файл истории: ' + ru, en: 'History file: ' + en };
+  }
+  function historyBlock() {
+    var keep = curKeep(), line = sizeLine();
+    return '<div class="wth-set" data-keep-block><div class="wth-set-label">' + T('История', 'History') + '</div>' +
+      '<p class="wth-hint">' + T('Сколько хранить на диске', 'How long to keep it on disk') + '</p>' +
+      '<div class="seg" role="group"' + A('aria-label', 'Сколько хранить историю', 'How long to keep the history') + '>' +
+      KEEPS.map(function (k) { return '<button type="button" data-keep-set="' + k[0] + '" aria-pressed="' + (k[0] === keep) + '">' + T(k[1], k[2]) + '</button>'; }).join('') + '</div>' +
+      '<p class="wth-hint" data-history-size data-en="' + esc(line.en) + '">' + esc(L(line.ru, line.en)) + '</p>' +
+      '<button type="button" class="btn btn-sm" data-history-clear>' + T('Очистить историю', 'Clear the history') + '</button></div>';
+  }
+  function syncLoad(p) {
+    markPressed('data-cap-set', String(curCap()));
+    markPressed('data-keep-set', String(curKeep()));
+    var el = $('[data-history-size]', p), line = sizeLine();
+    if (el && el.textContent !== L(line.ru, line.en)) { el.textContent = L(line.ru, line.en); el.setAttribute('data-en', line.en); }
+  }
+  // «Очистить историю»: the first click asks, the second one within 5 s deletes the history of every target.
+  function disarm(b) { delete b.dataset.armed; b.textContent = L('Очистить историю', 'Clear the history'); }
+  function clearHistory(b) {
+    if (b.disabled) return;
+    if (!b.dataset.armed) {
+      b.dataset.armed = '1';
+      b.textContent = L('Удалить всю историю? Нажмите еще раз', 'Delete the whole history? Click again');
+      clearTimeout(ST.clearTimer);
+      ST.clearTimer = setTimeout(function () { disarm(b); }, 5000);
+      return;
+    }
+    clearTimeout(ST.clearTimer);
+    b.disabled = true;
+    call('clear_history').then(function () { disarm(b); b.disabled = false; },
+      function (err) { console.error('clear_history failed', err); disarm(b); b.disabled = false; });
   }
 
   // ---------- Places database of the route map (WT.geo, settings.geoCheck) ----------
@@ -636,6 +690,7 @@
     }
     markPressed('data-theme-set', curTheme());
     markPressed('data-lang-set', curLang());
+    syncLoad(p);
     syncGeo(p);
   }
   function update() {
@@ -674,6 +729,15 @@
       markPressed('data-geo-check', on ? 'on' : 'off');
       if (on !== (settings().geoCheck !== false)) saveSettings({ geoCheck: on });
     } else if ((b = t.closest('[data-geo-remove]'))) { if (!b.disabled) removeGeo(b); }
+    else if ((b = t.closest('[data-cap-set]'))) {
+      var cap = +b.dataset.capSet;
+      markPressed('data-cap-set', String(cap));
+      if (cap !== settings().probeCap) saveSettings({ probeCap: cap });
+    } else if ((b = t.closest('[data-keep-set]'))) {
+      var keep = +b.dataset.keepSet;
+      markPressed('data-keep-set', String(keep));
+      if (keep !== settings().keepDays) saveSettings({ keepDays: keep });
+    } else if ((b = t.closest('[data-history-clear]'))) clearHistory(b);
     else if ((b = t.closest('.wth-add-btn'))) add().then(null, noop); // the error is under the field
   }
 

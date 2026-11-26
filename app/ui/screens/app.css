@@ -94,6 +94,7 @@ body.scr-trace { background: var(--bg); }
 .scr-probes .chip { background: var(--layer); }
 .scr-probes .n { margin-right: var(--s1); }
 /* A failed action or data that no longer comes (screens/main.js): one neutral line, the first to shrink */
+.wts-item.scr-cap { color: var(--partial-text); }
 .wts-item.scr-note { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--title); }
 
 /* ---------- dialog over the screen ---------- */

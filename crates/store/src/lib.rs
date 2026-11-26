@@ -127,7 +127,11 @@ impl Store {
         // The app and the CLI may write at the same time.
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0))?;
-        conn.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
+        // After a checkpoint the log file is cut back to 64 MB at most: a clean-up of old rounds
+        // writes a lot through it at once.
+        conn.execute_batch(
+            "PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA journal_size_limit = 67108864;",
+        )?;
         migrate(&conn)?;
         Ok(Self { conn })
     }
@@ -539,11 +543,74 @@ impl Store {
         let mut st = self.conn.prepare_cached(
             "SELECT ts_ms FROM rounds
              WHERE target_id = ?1 AND ts_ms >= ?2 AND ts_ms < ?3 AND reached = 0
+               AND NOT (path_len = 1 AND EXISTS (SELECT 1 FROM hops
+                   WHERE round_id = rounds.id AND ttl = 1 AND kind = ?4))
              ORDER BY ts_ms",
         )?;
-        let rows = st.query_map(params![target_id, from_ms, to_ms], |r| r.get(0))?;
+        // A round none of whose probes could be sent (no network here) is no loss mark.
+        let rows = st.query_map(
+            params![target_id, from_ms, to_ms, ReplyKind::Error.code()],
+            |r| r.get(0),
+        )?;
         rows.collect()
     }
+
+    /// Deletes rounds that started before `before_ms`, with their hops: at most `batch` rounds of
+    /// each target per call, so a long first clean-up does not hold the database. Returns how
+    /// many rounds went; call again until it is 0. The file stops growing but keeps its size:
+    /// SQLite uses the freed pages again.
+    pub fn prune_before(&mut self, before_ms: i64, batch: usize) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let targets: Vec<i64> = {
+            let mut st = tx.prepare("SELECT id FROM targets")?;
+            let rows = st.query_map([], |r| r.get(0))?;
+            rows.collect::<Result<_>>()?
+        };
+        let mut gone = 0;
+        {
+            let mut pick = tx.prepare(
+                "SELECT id FROM rounds WHERE target_id = ?1 AND ts_ms < ?2 ORDER BY ts_ms LIMIT ?3",
+            )?;
+            let mut hops = tx.prepare("DELETE FROM hops WHERE round_id = ?1")?;
+            let mut round = tx.prepare("DELETE FROM rounds WHERE id = ?1")?;
+            for t in targets {
+                let ids: Vec<i64> = pick
+                    .query_map(params![t, before_ms, batch as i64], |r| r.get(0))?
+                    .collect::<Result<_>>()?;
+                for id in ids {
+                    hops.execute([id])?;
+                    gone += round.execute([id])?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(gone)
+    }
+
+    /// Deletes every round and hop of every target; targets, pinned hops and settings stay.
+    /// The file shrinks.
+    pub fn clear_history(&mut self) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM hops", [])?;
+        tx.execute("DELETE FROM rounds", [])?;
+        tx.commit()?;
+        self.conn.execute_batch("VACUUM")?;
+        // The write-ahead log keeps the old pages until a checkpoint, and its file its largest
+        // size: write them back and cut it, so the disk space comes back now.
+        self.conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
+    }
+}
+
+/// Size of the history on disk: the database file with its write-ahead log.
+pub fn history_bytes(db_path: &Path) -> u64 {
+    let wal = PathBuf::from(format!("{}-wal", db_path.display()));
+    [db_path, wal.as_path()]
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .sum()
 }
 
 /// Next free place at the end of the main screen.

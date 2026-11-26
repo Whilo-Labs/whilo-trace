@@ -23,9 +23,9 @@ use whilo_trace_engine::monitor::resolve_v4;
 use whilo_trace_engine::sim::SimNet;
 use whilo_trace_engine::stats::LOSS_NOTABLE_PCT;
 use whilo_trace_engine::{
-    hop_stats_toward, now_ms, spawn_monitor_with, timeline, verdict, Bucket, HopStats, HopStatus,
-    MonitorConfig, MonitorEvent, MonitorHandle, MonitorOptions, ProbeKind, Prober, ProberFactory,
-    Resolver, RoundRecord, Verdict,
+    hop_stats_toward, not_sent, now_ms, spawn_monitor_with, timeline, verdict, Bucket, HopStats,
+    HopStatus, MonitorConfig, MonitorEvent, MonitorHandle, MonitorOptions, ProbeBudget, ProbeKind,
+    Prober, ProberFactory, Resolver, RoundRecord, Verdict,
 };
 use whilo_trace_store::buckets::{self, Grid, HopInfo, LineStats, Pick, Window};
 use whilo_trace_store::report::{self, Document, PinnedLine, Report, Section};
@@ -48,6 +48,17 @@ const WINDOWS: [(&str, i64); 6] = [
 ];
 /// How far back to look for a hop's address when it is pinned.
 const PIN_LOOK_BACK: usize = 2000;
+/// Probes per second for all targets together the settings offer.
+const PROBE_CAPS: [u32; 4] = [25, 50, 100, 200];
+/// Days of history on disk the settings offer; 0 keeps everything.
+const KEEP_DAYS: [u32; 5] = [7, 30, 90, 365, 0];
+/// The history is cleaned up this long after the start, then every `PRUNE_EVERY`, and within a
+/// minute after the days to keep change.
+const PRUNE_FIRST: Duration = Duration::from_secs(30);
+const PRUNE_EVERY: Duration = Duration::from_secs(600);
+const PRUNE_LOOK: Duration = Duration::from_secs(60);
+/// Rounds of each target deleted at a time, so writes of new rounds are never held up for long.
+const PRUNE_BATCH: usize = 500;
 
 /// What a target found, shared with its monitor thread.
 struct TargetData {
@@ -114,7 +125,12 @@ impl Net {
         }
     }
 
-    fn monitor_options(&self, paused: bool) -> MonitorOptions {
+    fn monitor_options(
+        &self,
+        paused: bool,
+        budget: Arc<ProbeBudget>,
+        phase: Duration,
+    ) -> MonitorOptions {
         let prober = self
             .prober
             .clone()
@@ -123,9 +139,19 @@ impl Net {
             paused,
             prober,
             resolve: Some(self.resolve.clone()),
-            ..Default::default()
+            budget: Some(budget),
+            phase,
         }
     }
+}
+
+/// Where in its interval a target starts its rounds: the same for a host on every run, and
+/// spread over the interval, so targets started together do not send at the same moment.
+fn phase_of(host: &str, interval_s: f64) -> Duration {
+    let h = host.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    Duration::from_secs_f64(interval_s * (h % 1000) as f64 / 1000.0)
 }
 
 /// Whether `WHILO_TRACE_SIMULATE` asks for the simulated network: any value but none, an
@@ -168,6 +194,8 @@ struct Core {
     /// Places of the routers on the map: the databases, or made-up places on the simulated
     /// network.
     geo: Arc<GeoState>,
+    /// Probes per second of all monitors together (`settings.probe_cap`).
+    budget: Arc<ProbeBudget>,
 }
 
 /// A poisoned lock still holds usable data: a panic in one command must not stop the others.
@@ -297,6 +325,7 @@ impl Core {
         let settings = load_settings(&store.settings().map_err(db)?);
         let recent = store.recent().map_err(db)?;
         let geo = Arc::new(GeoState::new(&db_path, net.simulated));
+        let budget = ProbeBudget::new(settings.probe_cap);
         Ok(Arc::new(Core {
             db_path,
             notify,
@@ -320,6 +349,7 @@ impl Core {
             settings: Mutex::new(settings),
             recent: Mutex::new(recent),
             geo,
+            budget,
         }))
     }
 
@@ -390,13 +420,21 @@ impl Core {
         let mut cfg = MonitorConfig::new(host.to_string());
         cfg.interval = Duration::from_secs_f64(interval_s);
         let (data, store, notify) = (data.clone(), self.store.clone(), self.notify.clone());
+        let opts =
+            self.net
+                .monitor_options(paused, self.budget.clone(), phase_of(host, interval_s));
         // A target saved on pause starts paused: no probe and no lookup until it is resumed.
-        spawn_monitor_with(cfg, self.net.monitor_options(paused), move |event| {
+        spawn_monitor_with(cfg, opts, move |event| {
             match event {
                 MonitorEvent::Round(round) => {
                     let saved = lock(&store).insert_round(id, &round);
+                    // No probe left the computer: it has no network. Not loss, a gap.
+                    let offline = not_sent(&round);
                     let mut d = lock(&data);
-                    d.error = saved.err().map(db);
+                    d.error = saved
+                        .err()
+                        .map(db)
+                        .or_else(|| offline.then(|| "no_network".to_string()));
                     d.hist.push(round);
                 }
                 MonitorEvent::Error(msg) => lock(&data).error = Some(error_code(&msg)),
@@ -655,8 +693,6 @@ struct Computed {
     /// Pinned hop rows of this target, by pin id.
     pins: Vec<(i64, Row)>,
     trace: Option<Trace>,
-    /// Probes per round, for the rate.
-    probes: usize,
 }
 
 struct TargetInfo {
@@ -828,7 +864,6 @@ fn compute(
         row,
         pins: pin_rows,
         trace,
-        probes: last.map_or(0, |r| r.hops.len()),
     }
 }
 
@@ -859,7 +894,6 @@ impl Core {
         // Positions of every row: targets and pinned hops share one order.
         let mut order: Vec<(i64, u8, i64, Row)> = Vec::new();
         let mut trace = None;
-        let mut rate = 0.0;
         let (h_from, h_to) = (f.to_ms - DAY_MS, f.to_ms);
         let slot_ms = DAY_MS / HISTORY_SLOTS as i64;
         let mut history: BTreeSet<u32> = BTreeSet::new();
@@ -928,9 +962,6 @@ impl Core {
                     .map_err(db)?;
                 history.extend(lost.into_iter().map(|ts| ((ts - h_from) / slot_ms) as u32));
             }
-            if !t.paused && c.probes > 0 {
-                rate += c.probes as f64 / t.interval_s;
-            }
             if c.trace.is_some() {
                 trace = c.trace;
             }
@@ -969,7 +1000,10 @@ impl Core {
             loss: Vec::new(),
             settings: lock(&self.settings).clone(),
             probes_available: vec![ProbeKind::Icmp.as_str().into()],
-            rate_pps: (rate * 10.0).round() / 10.0,
+            rate_pps: (self.budget.sent_per_s() * 10.0).round() / 10.0,
+            rate_cap: self.budget.per_s(),
+            rounds_skipped: self.budget.skipped_recently(),
+            history_bytes: whilo_trace_store::history_bytes(&self.db_path),
             recent: lock(&self.recent).clone(),
             geo,
         })
@@ -1147,12 +1181,79 @@ impl Core {
     fn change_settings(&self, patch: &SettingsPatch) -> Result<Settings, String> {
         let mut s = lock(&self.settings);
         let changed = apply_settings(&mut s, patch);
+        if self.budget.per_s() != s.probe_cap {
+            self.budget.set_per_s(s.probe_cap);
+        }
         let store = lock(&self.store);
         for (key, value) in changed {
             store.set_setting(key, &value).map_err(db)?;
         }
         Ok(s.clone())
     }
+
+    /// Deletes the rounds older than the days to keep, a batch at a time on a connection of its
+    /// own. Returns how many went.
+    fn prune_history(&self) -> Result<usize, String> {
+        let days = lock(&self.settings).keep_days;
+        if days == 0 {
+            return Ok(0);
+        }
+        let before = now_ms() - i64::from(days) * DAY_MS;
+        let mut store = Store::open(&self.db_path).map_err(db)?;
+        let mut gone = 0;
+        loop {
+            let n = store.prune_before(before, PRUNE_BATCH).map_err(db)?;
+            if n == 0 {
+                return Ok(gone);
+            }
+            gone += n;
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// Cleans the history up in the background for as long as the app runs.
+    fn keep_history_trimmed(core: Arc<Core>) {
+        let _ = std::thread::Builder::new()
+            .name("history clean-up".into())
+            .spawn(move || {
+                std::thread::sleep(PRUNE_FIRST);
+                let mut last: Option<(u32, std::time::Instant)> = None;
+                loop {
+                    let days = lock(&core.settings).keep_days;
+                    let due = last.is_none_or(|(d, at)| d != days || at.elapsed() >= PRUNE_EVERY);
+                    if due {
+                        if let Err(e) = core.prune_history() {
+                            eprintln!("history clean-up: {e}");
+                        }
+                        last = Some((days, std::time::Instant::now()));
+                    }
+                    std::thread::sleep(PRUNE_LOOK);
+                }
+            });
+    }
+
+    /// Deletes the whole history of every target; targets, pinned hops and settings stay.
+    fn clear_history(&self) -> Result<(), String> {
+        lock(&self.store).clear_history().map_err(db)?;
+        let now = now_ms();
+        let ids: Vec<i64> = {
+            let targets = lock(&self.targets);
+            for t in targets.values() {
+                let mut d = lock(&t.data);
+                d.hist = buckets::History::new(KEEP_MS, now);
+            }
+            targets.keys().copied().collect()
+        };
+        for id in ids {
+            (self.notify)(id);
+        }
+        Ok(())
+    }
+}
+
+#[tauri::command(async)]
+fn clear_history(core: State<'_, Arc<Core>>) -> Result<(), String> {
+    core.clear_history()
 }
 
 #[tauri::command(async)]
@@ -1230,6 +1331,14 @@ fn apply_settings(s: &mut Settings, p: &SettingsPatch) -> Vec<(&'static str, Str
         s.window = v.into();
         changed.push(("window", format!("\"{v}\"")));
     }
+    if let Some(v) = p.probe_cap.filter(|v| PROBE_CAPS.contains(v)) {
+        s.probe_cap = v;
+        changed.push(("probeCap", v.to_string()));
+    }
+    if let Some(v) = p.keep_days.filter(|v| KEEP_DAYS.contains(v)) {
+        s.keep_days = v;
+        changed.push(("keepDays", v.to_string()));
+    }
     geo::apply_settings(s, p, &mut changed);
     changed
 }
@@ -1245,6 +1354,8 @@ fn load_settings(saved: &[(String, String)]) -> Settings {
             "theme" => p.theme = v.as_str().map(String::from),
             "lang" => p.lang = v.as_str().map(String::from),
             "window" => p.window = v.as_str().map(String::from),
+            "probeCap" => p.probe_cap = v.as_u64().and_then(|x| u32::try_from(x).ok()),
+            "keepDays" => p.keep_days = v.as_u64().and_then(|x| u32::try_from(x).ok()),
             _ => geo::load_setting(&mut p, key, &v),
         }
     }
@@ -1696,6 +1807,7 @@ fn main() {
             };
             geo::wire_app(app, &core.geo);
             core.start_saved()?;
+            Core::keep_history_trimmed(core.clone());
             if let Some(window) = app.get_webview_window("main") {
                 let (theme, lang) = {
                     let s = lock(&core.settings);
@@ -1735,6 +1847,7 @@ fn main() {
             pick_folder,
             open_folder,
             set_background,
+            clear_history,
             geo::geo_check,
             geo::geo_download,
             geo::geo_cancel,

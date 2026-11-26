@@ -1215,3 +1215,73 @@ fn a_report_with_the_route_map_shows_it_inline_and_credits_dbip() {
         );
     }
 }
+
+/// A round in which no probe could be sent (no network on this computer).
+fn offline_round(ts_ms: i64) -> RoundRecord {
+    RoundRecord {
+        ts_ms,
+        probe: ProbeKind::Icmp,
+        dst: ip(4),
+        path_len: 1,
+        reached: false,
+        hops: vec![HopSample::lost(1, ReplyKind::Error)],
+    }
+}
+
+#[test]
+fn rounds_without_a_network_are_gaps_not_loss() {
+    let mut s = memory();
+    let id = s.add_target("10.0.0.4").unwrap();
+    let mut hist = History::new(3_600_000, 0);
+    // Three rounds that reached the destination, each followed a second later by one without a
+    // network.
+    for r in rounds(&["+++", "+++", "+++", "+++"], 2000) {
+        let off = offline_round(r.ts_ms + 1000);
+        s.insert_round(id, &r).unwrap();
+        s.insert_round(id, &off).unwrap();
+        hist.push(r);
+        hist.push(off);
+    }
+    // The day strip: no loss marks, neither from memory nor from disk.
+    assert_eq!(hist.lost_between(0, 10_000).count(), 0);
+    assert!(s.lost_times(id, 0, 10_000).unwrap().is_empty());
+    // The buckets: three rounds measured, three not sent.
+    let g = Grid::build(&s.load_rounds(id, 0, 10_000).unwrap(), 6000, 0, 1);
+    let w = g.window(0, 1);
+    assert_eq!(w.rounds(), 3);
+    assert_eq!(w.not_sent_in(w.all()), 3);
+    assert_eq!(w.stats(Pick::Dest, w.all()).loss_pct(), 0.0);
+    assert_eq!(w.stats(Pick::Hop(1), w.all()).loss_pct(), 0.0);
+}
+
+#[test]
+fn old_rounds_are_pruned_with_their_hops() {
+    let mut s = memory();
+    let a = s.add_target("10.0.0.4").unwrap();
+    let b = s.add_target("10.0.0.5").unwrap();
+    for r in rounds(
+        &["++++++++++", "++++++++++", "++++++++++", "++++++++++"],
+        1000,
+    ) {
+        s.insert_round(a, &r).unwrap();
+        s.insert_round(b, &r).unwrap();
+    }
+    // Rounds before 6 s go, three per target and call.
+    assert_eq!(s.prune_before(6000, 3).unwrap(), 6);
+    assert_eq!(s.prune_before(6000, 3).unwrap(), 6);
+    assert_eq!(s.prune_before(6000, 3).unwrap(), 0);
+    assert_eq!(s.load_rounds(a, 0, 20_000).unwrap().len(), 4);
+    assert_eq!(s.load_rounds(b, 0, 20_000).unwrap().len(), 4);
+    let orphans: i64 = s
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM hops WHERE round_id NOT IN (SELECT id FROM rounds)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(orphans, 0, "hops of deleted rounds are deleted too");
+    s.clear_history().unwrap();
+    assert!(s.load_rounds(a, 0, 20_000).unwrap().is_empty());
+    assert_eq!(s.targets().unwrap().len(), 2, "targets stay");
+}

@@ -5,18 +5,21 @@
 //! over any time window. Rounds of one target overlap, so a short interval holds even
 //! when every round waits for the timeout.
 
+pub mod budget;
 pub mod dns;
 pub mod monitor;
 pub mod probe;
 pub mod sim;
 pub mod stats;
 
+pub use budget::{BudgetShare, ProbeBudget, DEFAULT_PROBES_PER_S};
 pub use monitor::{
     now_ms, spawn_monitor, spawn_monitor_with, MonitorConfig, MonitorEvent, MonitorHandle,
     MonitorOptions, ProbeKind, ProberFactory, Resolver, RoundRecord, MIN_INTERVAL,
 };
 pub use probe::{HopSample, Prober, ReplyKind, RoundSpec};
 pub use stats::{
-    hop_stats, hop_stats_toward, lane, lost_past_end, outcome, reached_dest_ttl, row_stats, slots,
-    timeline, verdict, Bucket, HopStats, HopStatus, Lane, Outcome, RowStats, Slot, Verdict,
+    hop_stats, hop_stats_toward, lane, lost_past_end, not_sent, outcome, reached_dest_ttl,
+    row_stats, slots, timeline, verdict, Bucket, HopStats, HopStatus, Lane, Outcome, RowStats,
+    Slot, Verdict,
 };

@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 use std::net::IpAddr;
 use std::ops::Range;
 use whilo_trace_engine::stats::LOSS_NOTABLE_PCT;
-use whilo_trace_engine::{HopStatus, ReplyKind, RoundRecord};
+use whilo_trace_engine::{not_sent, HopStatus, ReplyKind, RoundRecord};
 
 /// One line (the destination or one TTL) in one bucket.
 #[derive(Debug, Clone, Default)]
@@ -121,6 +121,9 @@ impl Cell {
 #[derive(Debug, Clone, Default)]
 pub struct Slot {
     pub rounds: u32,
+    /// Rounds none of whose probes could be sent (no network on this computer). They are not in
+    /// `rounds` or anywhere else: no loss, a gap.
+    pub not_sent: u32,
     /// The destination: sent is every round, recv the rounds that reached it.
     pub dest: Cell,
     /// One cell per TTL, `hops[ttl - 1]`.
@@ -142,6 +145,10 @@ fn count(lens: &mut Vec<(u8, u32)>, len: u8) {
 
 impl Slot {
     fn add(&mut self, r: &RoundRecord) {
+        if not_sent(r) {
+            self.not_sent += 1;
+            return;
+        }
         self.rounds += 1;
         let dest_lost = !r.reached;
         let dest_rtt = r.destination().and_then(|h| h.rtt_ms());
@@ -403,6 +410,11 @@ impl<'a> Window<'a> {
     }
 
     /// Rounds that started in the buckets `r`.
+    /// Rounds of the buckets `r` none of whose probes could be sent.
+    pub fn not_sent_in(&self, r: Range<usize>) -> u32 {
+        self.slots_in(r).map(|s| s.not_sent).sum()
+    }
+
     pub fn rounds_in(&self, r: Range<usize>) -> u32 {
         self.slots_in(r).map(|s| s.rounds).sum()
     }
@@ -731,7 +743,7 @@ impl History {
         for g in &mut self.grids {
             g.add(&r);
         }
-        if !r.reached {
+        if !r.reached && !not_sent(&r) {
             let i = self.lost.partition_point(|&t| t <= r.ts_ms);
             self.lost.insert(i, r.ts_ms);
         }
@@ -761,7 +773,7 @@ impl History {
         let first_lost = self.lost.front().copied().unwrap_or(i64::MAX);
         let lost: Vec<i64> = older
             .iter()
-            .filter(|r| !r.reached && r.ts_ms < first_lost)
+            .filter(|r| !r.reached && !not_sent(r) && r.ts_ms < first_lost)
             .map(|r| r.ts_ms)
             .collect();
         for t in lost.into_iter().rev() {

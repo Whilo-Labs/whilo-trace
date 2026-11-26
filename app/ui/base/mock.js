@@ -160,7 +160,7 @@
   }
   rows.forEach(function (r) { if (!r.hopOf) r.path = pathOf(r.probe, traceOf(r.host)); });
 
-  var settings = { warnMs: 100, badMs: 200, theme: 'system', lang: 'ru', window: '10m', geoCheck: true, home: null };
+  var settings = { warnMs: 100, badMs: 200, theme: 'system', lang: 'ru', window: '10m', geoCheck: true, home: null, probeCap: 50, keepDays: 30 };
   try { Object.assign(settings, JSON.parse(sessionStorage.getItem('wt-mock-settings') || '{}')); } catch (e) { /* no storage */ }
   var recent = ['1.1.1.1', '8.8.8.8', 'store.steampowered.com', 'www.upwork.com'];
   var seq = 100, listeners = {};
@@ -376,7 +376,8 @@
       trace: req.trace ? traceFor(req.trace) : (FLAGS.indexOf('strict') >= 0 ? null : copy(TRACE)),
       history: { fromMs: to - 86400000, toMs: to, slots: 200, loss: HISTORY.slice() },
       loss: LOSS.slice(), ticks: TICKS, settings: copy(settings), probesAvailable: ['icmp'],
-      ratePps: rows.filter(function (r) { return !r.paused; }).length ? 18 : 0, recent: recent.slice(),
+      ratePps: rows.filter(function (r) { return !r.paused; }).length ? 18 : 0, rateCap: settings.probeCap, roundsSkipped: 0,
+      historyBytes: 37748736, recent: recent.slice(),
       geo: geoState(),
     };
     // The mockup labels are for 16:00; once time moves (?mock=live) or the past is shown, WT.ticksAt(toMs) makes them.
@@ -440,11 +441,15 @@
       if (hm === null) p.home = null;
       else if (onGlobe(hm)) p.home = { lat: tenth(hm.lat), lon: tenth(hm.lon) };
       else delete p.home;
+      // as the core: only the offered values
+      if ('probeCap' in p && [25, 50, 100, 200].indexOf(p.probeCap) < 0) delete p.probeCap;
+      if ('keepDays' in p && [0, 7, 30, 90, 365].indexOf(p.keepDays) < 0) delete p.keepDays;
       Object.assign(settings, p);
       try { sessionStorage.setItem('wt-mock-settings', JSON.stringify(settings)); } catch (e) { /* no storage */ }
       return copy(settings);
     },
     recent_inputs: function () { return recent.slice(); },
+    clear_history: function () { return null; },
     export_report: function (a) {
       var r = a.req || {}, names = { html: 'report.html', png: 'timeline.png', csv: 'hops.csv', json: 'report.json' };
       var files = (r.formats || []).map(function (f) { return names[f]; }).filter(Boolean);

@@ -379,10 +379,16 @@
     var probes = order.length ? '<span class="wts-item scr-probes">' + T('пробы', 'probes') + order.map(function (lb) {
       return '<span class="chip">' + T(lb, lb) + '</span>' + T(String(by[lb]), String(by[lb]), 'num n');
     }).join('') + '</span>' : '';
-    return '<footer class="wts"><span class="wts-item num">' + left + '</span>' + noteHtml() + probes +
+    var cap = WT.rateCap || 0, skipped = WT.roundsSkipped || 0;
+    // Rounds over the ceiling of all targets were skipped in the last minute: say so, they are gaps, not loss.
+    var capped = skipped > 0 && cap ? '<span class="wts-item scr-cap has-tip" tabindex="0">' +
+      T('потолок ' + cap + ' ' + plural(cap, 'пакет', 'пакета', 'пакетов') + '/с: часть раундов пропущена', 'ceiling ' + cap + ' packets/s: some rounds skipped') +
+      '<span class="wth-tip to-right up" role="tooltip">' + T('За последнюю минуту не отправлено ' + skipped + ' ' + plural(skipped, 'раунд', 'раунда', 'раундов') + ', чтобы не перегрузить сеть. На графиках это пропуски, а не потери. Потолок меняется в настройках.',
+        'In the last minute ' + skipped + (skipped === 1 ? ' round was' : ' rounds were') + ' not sent so as not to flood the network. They are gaps on the charts, not loss. The ceiling is in the settings.') + '</span></span>' : '';
+    return '<footer class="wts"><span class="wts-item num">' + left + '</span>' + noteHtml() + probes + capped +
       '<span class="wts-item wts-right num has-tip" tabindex="0">' + T(ppsRu, ppsEn) +
-      '<span class="wth-tip to-right up" role="tooltip">' + T('Сколько пакетов в секунду отправляют пробы всех целей: по пакету на хоп за раунд. Чем больше типов проб и короче интервал, тем чаще узлы ограничивают свои ответы.',
-        'Packets per second sent by the probes of all targets: one packet per hop per round. More probe types and a shorter interval make nodes limit their replies more often.') + '</span></span></footer>';
+      '<span class="wth-tip to-right up" role="tooltip">' + T('Сколько пакетов в секунду ушло от всех целей за последние 10 секунд: по пакету на хоп за раунд. Цель, которая не отвечает, шлет пробы чуть дальше последнего ответившего узла и раз в минуту на всю глубину. Все цели вместе не шлют больше ' + (cap || 50) + ' пакетов в секунду, это меняется в настройках.',
+        'Packets per second sent by all targets over the last 10 seconds: one packet per hop per round. A target that does not answer probes a little past the last node that answered, and the full depth once a minute. All targets together send at most ' + (cap || 50) + ' packets a second; the settings change that.') + '</span></span></footer>';
   }
   // Patched in place (not rewritten), so the hint under the pointer and the focus stay.
   function patch(to, from) {

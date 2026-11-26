@@ -212,6 +212,12 @@ pub fn verdict_lines(v: &Verdict, probe: ProbeKind) -> Vec<String> {
             }
         }
     }
+    if v.not_sent_rounds > 0 {
+        lines.push(format!(
+            "In {} rounds no probe could be sent: this computer had no network. They are not counted as loss.",
+            v.not_sent_rounds
+        ));
+    }
     match v.unreachable_hops.as_slice() {
         [] => {}
         [one] => lines.push(format!("Hop {one} says the destination is unreachable.")),

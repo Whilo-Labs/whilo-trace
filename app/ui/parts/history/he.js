@@ -624,6 +624,10 @@
     } else if (c === 'probe_failed') {
       out.status = ['пробы не отправляются', 'Probes fail'];
       out.title = d ? ['Пробы не отправляются: ' + dot(d), 'Probes cannot be sent: ' + dot(d)] : ['Пробы не отправляются.', 'Probes cannot be sent.'];
+    } else if (c === 'no_network') {
+      out.status = ['нет сети', 'No network'];
+      out.title = ['Пробы не уходят: на этом компьютере нет сети.', 'Probes cannot be sent: this computer has no network.'];
+      out.hint = ['Такие раунды не считаются потерями и на графике остаются пропуском.', 'Such rounds are not counted as loss and stay a gap on the chart.'];
     } else if (c === 'invalid_interval') {
       var lo = WT.intervals[0], hi = WT.intervals[WT.intervals.length - 1];
       out.status = ['неверный интервал', 'Invalid interval'];

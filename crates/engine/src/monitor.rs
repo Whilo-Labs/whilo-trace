@@ -6,6 +6,7 @@
 //! waiting for the timeout. Workers are opened only when all others are busy, up to what the
 //! longest possible round needs at the current interval.
 
+use crate::budget::{BudgetShare, ProbeBudget};
 use crate::probe::{new_prober, HopSample, Prober, ReplyKind, RoundSpec, MAX_TTL};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -29,6 +30,12 @@ const MAX_IN_FLIGHT: usize = 16;
 const IDLE_WORKER: Duration = Duration::from_secs(30);
 /// What a round may take on top of its sends and its timeout before the backend gives up.
 const ROUND_SLACK: Duration = Duration::from_millis(500);
+/// A round that took this much longer than it can: the computer slept or the clock jumped while
+/// it was out. It measured nothing and is not reported.
+const SLEPT_MARGIN: Duration = Duration::from_secs(5);
+/// While the destination has never answered, rounds go this many TTLs past the deepest router
+/// that answered, not to `max_ttl`: a target that keeps silent would send 30 probes every round.
+const SILENT_PAST: u8 = 2;
 
 #[derive(Debug, Clone)]
 pub struct MonitorConfig {
@@ -76,6 +83,12 @@ pub struct MonitorOptions {
     /// Host lookups; `None` is `resolve_v4`, the system resolver. The simulated network
     /// (`crate::sim`) passes its own, so no DNS query leaves the computer either.
     pub resolve: Option<Resolver>,
+    /// Probes a second shared with the other monitors of the app; `None` sends without a limit.
+    /// A round that finds too few is not sent (a gap, not loss).
+    pub budget: Option<Arc<ProbeBudget>>,
+    /// The first round starts this long after the monitor, so targets started together do not
+    /// send their rounds at the same moment. At most one interval.
+    pub phase: Duration,
 }
 
 /// What a round was sent with. Only ICMP echo exists for now; TCP and UDP come later.
@@ -231,6 +244,10 @@ struct Done {
     worker: u64,
     ts_ms: i64,
     dst: Ipv4Addr,
+    max_ttl: u8,
+    /// From the start of the round to its result, by the steady clock or the wall clock,
+    /// whichever says longer (the steady clock may stand still while the computer sleeps).
+    took: Duration,
     result: io::Result<Vec<HopSample>>,
 }
 
@@ -264,6 +281,11 @@ struct Planner<F> {
     resolve_at: Option<Instant>,
     /// Where rounds can stop, learned from the rounds reported so far.
     path_len: Option<u8>,
+    /// While `path_len` is unknown: the deepest TTL that answered (0: none did), from the last
+    /// full round and any deeper answer since. Rounds then stop `SILENT_PAST` TTLs past it.
+    deepest: Option<u8>,
+    /// This monitor's part of the probes a second of all monitors.
+    budget: Option<BudgetShare>,
     /// Rounds in a row that did not reach the destination.
     lost_streak: u32,
     /// With `LOST_BEFORE_FULL_ROUND` lost rounds in a row, a round goes the full depth from this
@@ -288,6 +310,7 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
         let now = Instant::now();
         let literal = cfg.host.parse::<Ipv4Addr>().ok();
         let full_round_every = cfg.full_round_every;
+        let first_at = now + opts.phase.min(cfg.interval.max(MIN_INTERVAL));
         Self {
             interval: cfg.interval.max(MIN_INTERVAL),
             cfg,
@@ -298,12 +321,14 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
             rx,
             paused: opts.paused,
             stopping: false,
-            next_at: now,
+            next_at: first_at,
             last_at: None,
             dst: literal,
             literal: literal.is_some(),
             resolve_at: if literal.is_some() { None } else { Some(now) },
             path_len: None,
+            deepest: None,
+            budget: opts.budget.as_ref().map(|b| b.share()),
             lost_streak: 0,
             full_round_at: now + full_round_every,
             workers: Vec::new(),
@@ -405,14 +430,31 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
         }
         self.retire_idle(now, IDLE_WORKER);
         let Some(dst) = self.dst else { return };
+        let full = self.cfg.max_ttl;
+        let due = now >= self.full_round_at;
+        let max_ttl = match (self.path_len, self.deepest) {
+            // The destination keeps not answering: look past the known length, the route may have
+            // grown behind a router that keeps silent. Not after a single lost round: a full round
+            // reaches the destination by any of its deeper probes, and the loss would read lower.
+            (Some(len), _) if self.lost_streak < LOST_BEFORE_FULL_ROUND || !due => len,
+            (Some(_), _) => full,
+            // The destination has not answered yet: a little past the deepest router that did,
+            // with a full round now and then for a destination that starts answering further on.
+            (None, Some(d)) if !due => d.saturating_add(SILENT_PAST).clamp(1, full.max(1)),
+            // Nothing known while the first round is out: wait for it, not one more full round.
+            (None, None) if self.in_flight() > 0 => return,
+            _ => full,
+        };
         let Some(w) = self.free_worker() else { return };
-        // The destination keeps not answering: look past the known length, the route may have
-        // grown behind a router that keeps silent. Not after a single lost round: a full round
-        // reaches the destination by any of its deeper probes, and the loss would read lower.
-        let known = self
-            .path_len
-            .filter(|_| self.lost_streak < LOST_BEFORE_FULL_ROUND || now < self.full_round_at);
-        if known.is_none() {
+        if self
+            .budget
+            .as_ref()
+            .is_some_and(|b| !b.take(u32::from(max_ttl)))
+        {
+            // Over the probes a second of all targets: this round is a gap, not loss.
+            return;
+        }
+        if max_ttl >= full {
             self.full_round_at = now + self.cfg.full_round_every;
         }
         let job = Job {
@@ -420,7 +462,7 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
             ts_ms: now_ms(),
             spec: RoundSpec {
                 dst,
-                max_ttl: known.unwrap_or(self.cfg.max_ttl),
+                max_ttl,
                 timeout: self.cfg.timeout,
                 payload: self.cfg.payload,
                 send_gap: self.cfg.send_gap,
@@ -453,12 +495,28 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
     }
 
     fn report(&mut self, done: Done) {
+        if slept(done.took, &self.cfg, done.max_ttl) {
+            // The computer slept or the clock jumped while the round was out: its timeouts are not
+            // loss on the path. The gap stays a gap.
+            return;
+        }
         match done.result {
             Ok(samples) => {
                 let record = assemble(done.dst, done.ts_ms, samples);
                 // Rounds to an address the host no longer resolves to tell nothing about the path.
                 let short = stopped_short(&record, self.cfg.max_ttl.clamp(1, MAX_TTL));
                 if self.dst == Some(done.dst) {
+                    let answered = record
+                        .hops
+                        .iter()
+                        .rev()
+                        .find(|h| h.kind.answered())
+                        .map_or(0, |h| h.ttl);
+                    self.deepest = Some(if done.max_ttl >= self.cfg.max_ttl {
+                        answered
+                    } else {
+                        self.deepest.unwrap_or(0).max(answered)
+                    });
                     self.path_len = next_path_len(self.path_len, &record);
                     if record.reached {
                         self.lost_streak = 0;
@@ -502,6 +560,7 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
             Ok(ip) => {
                 if self.dst != Some(ip) {
                     self.path_len = None;
+                    self.deepest = None;
                     self.lost_streak = 0;
                 }
                 self.dst = Some(ip);
@@ -596,14 +655,18 @@ impl<F: FnMut(MonitorEvent)> Planner<F> {
 /// Runs rounds for the planner until it closes the job queue.
 fn work(id: u64, mut prober: Box<dyn Prober>, jobs: Receiver<Job>, done: Sender<Msg>) {
     for job in jobs {
+        let started = Instant::now();
         // A panicking backend must not leave the planner waiting for this round forever.
         let result = catch_unwind(AssertUnwindSafe(|| prober.round(&job.spec)))
             .unwrap_or_else(|_| Err(io::Error::other("probe backend panicked")));
+        let wall = Duration::from_millis(u64::try_from(now_ms() - job.ts_ms).unwrap_or(0));
         let msg = Msg::Done(Done {
             seq: job.seq,
             worker: id,
             ts_ms: job.ts_ms,
             dst: job.spec.dst,
+            max_ttl: job.spec.max_ttl,
+            took: started.elapsed().max(wall),
             result,
         });
         if done.send(msg).is_err() {
@@ -614,6 +677,12 @@ fn work(id: u64, mut prober: Box<dyn Prober>, jobs: Receiver<Job>, done: Sender<
 
 /// Rounds in a row without the destination before a round looks past the known length.
 const LOST_BEFORE_FULL_ROUND: u32 = 5;
+
+/// The round took much longer than its sends and its timeout allow: the computer slept or the
+/// clock jumped while it was out.
+fn slept(took: Duration, cfg: &MonitorConfig, max_ttl: u8) -> bool {
+    took > cfg.send_gap * u32::from(max_ttl) + cfg.timeout + ROUND_SLACK + SLEPT_MARGIN
+}
 
 /// Where the next round can stop: at the destination, once it answered.
 pub(crate) fn next_path_len(known: Option<u8>, record: &RoundRecord) -> Option<u8> {
@@ -829,8 +898,9 @@ mod tests {
 
     #[test]
     fn rounds_overlap_to_keep_a_short_interval() {
-        // Every round lasts 3.5 intervals, as when silent hops wait for the timeout.
-        let run = start(100, false, |_| ms(350));
+        // Every round lasts 3.5 intervals, as when silent hops wait for the timeout. The first one
+        // comes back at once: until it does, the monitor knows no route and sends nothing more.
+        let run = start(100, false, |k| ms(if k == 0 { 5 } else { 350 }));
         sleep(ms(1250));
         let Run {
             handle,
@@ -861,8 +931,17 @@ mod tests {
 
     #[test]
     fn rounds_come_out_in_start_order() {
-        // Even rounds outlast the next two, so they finish out of order.
-        let run = start(100, false, |k| ms(if k % 2 == 0 { 250 } else { 20 }));
+        // Even rounds outlast the next two, so they finish out of order. The first one comes back
+        // at once (the monitor waits for it).
+        let run = start(100, false, |k| {
+            ms(if k == 0 {
+                5
+            } else if k % 2 == 0 {
+                250
+            } else {
+                20
+            })
+        });
         sleep(ms(750));
         run.handle.stop_and_join();
         let rounds = run.rounds.lock().unwrap();
@@ -987,16 +1066,17 @@ mod tests {
     #[test]
     fn rounds_in_flight_are_capped() {
         // Rounds hang far past their timeout: ticks are skipped instead of opening more backends.
-        let run = start(100, false, |_| ms(1500));
+        // The first round comes back at once and gives the route; the ten after it hang.
+        let run = start(100, false, |k| ms(if k == 0 { 5 } else { 1500 }));
         sleep(ms(1300));
         {
             let seen = run.seen.lock().unwrap();
             assert_eq!(seen.opened, 10);
             assert_eq!(seen.peak, 10);
-            assert_eq!(seen.starts.len(), 10);
+            assert_eq!(seen.starts.len(), 11);
         }
         run.handle.stop_and_join();
-        assert_eq!(run.rounds.lock().unwrap().len(), 10);
+        assert_eq!(run.rounds.lock().unwrap().len(), 11);
     }
 
     #[test]
@@ -1199,9 +1279,11 @@ mod tests {
         let rounds = run.rounds.lock().unwrap();
         assert!(rounds.iter().all(|x| x.reached), "no false loss");
         let ttls = run.max_ttls.lock().unwrap();
+        // The round that ran into the longer route looks a little past its deepest router (TTL 4)
+        // and finds the destination there, without a full round to TTL 12.
         assert!(
-            ttls.iter().skip(1).any(|&t| t == 12),
-            "full round: {ttls:?}"
+            ttls.iter().skip(1).all(|&t| t <= 6) && ttls.contains(&6),
+            "{ttls:?}"
         );
         assert_eq!(*ttls.last().unwrap(), 6);
     }
@@ -1285,5 +1367,106 @@ mod tests {
             let gap = w[1].ts_ms - w[0].ts_ms;
             assert!((300..=800).contains(&gap), "rounds {gap} ms apart");
         }
+    }
+
+    #[test]
+    fn a_destination_that_never_answers_gets_short_rounds_and_a_full_one_now_and_then() {
+        // Nothing on the way answers at all: after the first full round, rounds go two TTLs deep,
+        // and a full round looks again every 300 ms.
+        let run = on_route(ms(300), |_| (None, None));
+        wait_rounds(&run, |r| r.len() >= 12);
+        run.handle.stop();
+        let ttls = run.max_ttls.lock().unwrap();
+        assert_eq!(ttls[0], 12, "{ttls:?}");
+        let short = ttls.iter().filter(|&&t| t == SILENT_PAST).count();
+        let full = ttls.iter().filter(|&&t| t == 12).count();
+        assert!(short >= 8, "{ttls:?}");
+        assert!(full >= 2 && full < short, "{ttls:?}");
+    }
+
+    #[test]
+    fn rounds_over_the_budget_are_not_sent() {
+        // A budget of 10 probes a second against 20 rounds a second of 4 probes: the first full
+        // round (8) and a few of the known length (4) go, the rest are skipped.
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let s = seen.clone();
+        let prober: ProberFactory = Box::new(move || {
+            Ok(Box::new(Fake {
+                seen: s.clone(),
+                delay: Arc::new(|_| ms(5)),
+            }) as Box<dyn Prober>)
+        });
+        let mut cfg = MonitorConfig::new(HOST);
+        cfg.interval = ms(50);
+        cfg.timeout = ms(400);
+        cfg.send_gap = Duration::ZERO;
+        cfg.max_ttl = 8;
+        let budget = ProbeBudget::new(10);
+        let opts = MonitorOptions {
+            prober: Some(prober),
+            budget: Some(budget.clone()),
+            ..Default::default()
+        };
+        let rounds = Arc::new(Mutex::new(0usize));
+        let r = rounds.clone();
+        let handle = spawn_monitor_with(cfg, opts, move |ev| {
+            if let MonitorEvent::Round(_) = ev {
+                *r.lock().unwrap() += 1;
+            }
+        })
+        .unwrap();
+        sleep(ms(1000));
+        handle.stop_and_join();
+        // About 20 probes in a second (10 held at the start, 10 more over it): 4 or 5 rounds.
+        let n = *rounds.lock().unwrap();
+        assert!((3..=7).contains(&n), "{n} rounds");
+        assert!(
+            budget.skipped_recently() >= 10,
+            "{}",
+            budget.skipped_recently()
+        );
+        let ttls = seen.lock().unwrap().max_ttls.clone();
+        assert_eq!(ttls[0], 8);
+        assert!(ttls[1..].iter().all(|&t| t == PATH), "{ttls:?}");
+    }
+
+    #[test]
+    fn the_first_round_waits_for_its_phase() {
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let s = seen.clone();
+        let prober: ProberFactory = Box::new(move || {
+            Ok(Box::new(Fake {
+                seen: s.clone(),
+                delay: Arc::new(|_| ms(1)),
+            }) as Box<dyn Prober>)
+        });
+        let mut cfg = MonitorConfig::new(HOST);
+        cfg.interval = ms(1000);
+        let opts = MonitorOptions {
+            prober: Some(prober),
+            phase: ms(300),
+            ..Default::default()
+        };
+        let t0 = Instant::now();
+        let handle = spawn_monitor_with(cfg, opts, |_| {}).unwrap();
+        sleep(ms(600));
+        handle.stop_and_join();
+        let starts = seen.lock().unwrap().starts.clone();
+        assert_eq!(starts.len(), 1);
+        let at = starts[0].duration_since(t0);
+        assert!(at >= ms(290), "first round after {at:?}");
+    }
+
+    #[test]
+    fn a_round_that_took_longer_than_it_can_slept() {
+        let cfg = MonitorConfig::new(HOST);
+        // 30 sends 25 ms apart, a 2 s timeout and 0.5 s of slack: 3.25 s at most, 8.25 s with the margin.
+        assert!(!slept(Duration::from_secs(3), &cfg, 30));
+        assert!(!slept(Duration::from_secs(8), &cfg, 30));
+        assert!(slept(Duration::from_secs(9), &cfg, 30));
+        assert!(
+            slept(Duration::from_secs(600), &cfg, 4),
+            "ten minutes asleep"
+        );
     }
 }

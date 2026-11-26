@@ -171,6 +171,9 @@
     WT.settings = s.settings || WT.settings;
     WT.probesAvailable = s.probesAvailable || ['icmp'];
     WT.ratePps = s.ratePps || 0;
+    WT.rateCap = s.rateCap || 0;
+    WT.roundsSkipped = s.roundsSkipped || 0;
+    WT.historyBytes = s.historyBytes || 0;
     WT.recent = s.recent || [];
     // Places database of the route map (state, month, source, download); the trace carries home and hops[].geo.
     WT.geo = s.geo || null;
@@ -180,8 +183,9 @@
     N: 120, rng: rng, series: series, sample: sample, LOSS: [],
     probes: probes, targets: [], trace: null, statuses: statuses,
     ticks: {}, windows: windows, windowSeconds: WINDOW_S, intervals: intervals, history24h: [], history: null,
-    nowMs: 0, fromMs: 0, toMs: 0, live: true, bucketMs: 5000, ratePps: 0, recent: [], geo: null,
-    settings: { warnMs: 100, badMs: 200, theme: 'system', lang: 'ru', window: '10m', geoCheck: true, home: null },
+    nowMs: 0, fromMs: 0, toMs: 0, live: true, bucketMs: 5000, ratePps: 0, rateCap: 50, roundsSkipped: 0, historyBytes: 0,
+    recent: [], geo: null,
+    settings: { warnMs: 100, badMs: 200, theme: 'system', lang: 'ru', window: '10m', geoCheck: true, home: null, probeCap: 50, keepDays: 30 },
     probesAvailable: ['icmp'],
     path: { line: line, bars: bars, zone: zone, jitter: jitter, hatch: hatch },
     stats: stats, fmt: fmt, lossNum: lossNum, apply: apply, ticksAt: ticksAt,

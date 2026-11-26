@@ -55,8 +55,14 @@ pub struct Snapshot {
     pub loss: Vec<u32>,
     pub settings: Settings,
     pub probes_available: Vec<String>,
-    /// Probes per second over all running rows.
+    /// Probes per second actually sent by all rows over the last ten seconds.
     pub rate_pps: f64,
+    /// The ceiling of probes per second for all rows together (`settings.probeCap`).
+    pub rate_cap: u32,
+    /// Rounds not sent over the last minute because the ceiling was reached: gaps, not loss.
+    pub rounds_skipped: u32,
+    /// Size of the history file on disk, bytes.
+    pub history_bytes: u64,
     pub recent: Vec<String>,
     /// The database of places for the map.
     pub geo: GeoStatus,
@@ -226,6 +232,20 @@ pub struct Settings {
     /// Home put on the map by hand; null: the first router placed in a city.
     #[serde(default)]
     pub home: Option<HomeSetting>,
+    /// Probes per second for all targets together: 25, 50, 100 or 200.
+    #[serde(default = "default_probe_cap")]
+    pub probe_cap: u32,
+    /// Days of history kept on disk: 7, 30, 90 or 365; 0 keeps everything.
+    #[serde(default = "default_keep_days")]
+    pub keep_days: u32,
+}
+
+fn default_probe_cap() -> u32 {
+    50
+}
+
+fn default_keep_days() -> u32 {
+    30
 }
 
 impl Default for Settings {
@@ -238,6 +258,8 @@ impl Default for Settings {
             window: "10m".into(),
             geo_check: true,
             home: None,
+            probe_cap: default_probe_cap(),
+            keep_days: default_keep_days(),
         }
     }
 }
@@ -262,6 +284,8 @@ pub struct SettingsPatch {
     /// No key leaves the home as it is; null clears it.
     #[serde(default, deserialize_with = "some")]
     pub home: Option<Option<HomeSetting>>,
+    pub probe_cap: Option<u32>,
+    pub keep_days: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

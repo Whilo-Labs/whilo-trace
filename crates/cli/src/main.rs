@@ -4,12 +4,13 @@ use clap::{Args, Parser, Subcommand};
 use std::collections::VecDeque;
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use whilo_trace_engine::dns::DnsCache;
 use whilo_trace_engine::{
-    hop_stats, hop_stats_toward, now_ms, spawn_monitor, timeline, verdict, HopStats, MonitorConfig,
-    MonitorEvent, ProbeKind, RoundRecord,
+    hop_stats, hop_stats_toward, now_ms, spawn_monitor, spawn_monitor_with, timeline, verdict,
+    HopStats, MonitorConfig, MonitorEvent, MonitorOptions, ProbeBudget, ProbeKind, RoundRecord,
+    DEFAULT_PROBES_PER_S,
 };
 use whilo_trace_store::report::{self, fmt_ms, status_label, Report};
 use whilo_trace_store::{default_db_path, Store};
@@ -83,6 +84,9 @@ struct ProbeArgs {
     /// Milliseconds between probes of one round.
     #[arg(long, default_value_t = 25)]
     send_gap_ms: u64,
+    /// Probes per second for all hosts together; rounds over it are skipped, not lost.
+    #[arg(long, default_value_t = DEFAULT_PROBES_PER_S)]
+    max_pps: u32,
 }
 
 impl ProbeArgs {
@@ -94,6 +98,13 @@ impl ProbeArgs {
             payload: self.payload,
             send_gap: Duration::from_millis(self.send_gap_ms),
             ..MonitorConfig::new(host)
+        }
+    }
+
+    fn options(&self, budget: &Arc<ProbeBudget>) -> MonitorOptions {
+        MonitorOptions {
+            budget: Some(budget.clone()),
+            ..Default::default()
         }
     }
 }
@@ -151,6 +162,7 @@ fn watch(
     let (tx, rx) = mpsc::channel::<(usize, MonitorEvent)>();
     let mut watched = Vec::new();
     let mut monitors = Vec::new();
+    let budget = ProbeBudget::new(probe.max_pps);
     for (i, host) in hosts.iter().enumerate() {
         let id = match &store {
             Some(s) => Some(s.watch_target(host)?),
@@ -164,9 +176,13 @@ fn watch(
             rounds: 0,
         });
         let tx = tx.clone();
-        monitors.push(spawn_monitor(probe.config(host), move |ev| {
-            let _ = tx.send((i, ev));
-        })?);
+        monitors.push(spawn_monitor_with(
+            probe.config(host),
+            probe.options(&budget),
+            move |ev| {
+                let _ = tx.send((i, ev));
+            },
+        )?);
     }
     drop(tx);
 

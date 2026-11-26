@@ -51,7 +51,10 @@ pub struct HopStats {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Verdict {
+    /// Rounds that measured something; rounds without a sent probe are in `not_sent_rounds`.
     pub rounds: usize,
+    /// Rounds none of whose probes could be sent (no network on this computer).
+    pub not_sent_rounds: usize,
     pub dest_ttl: Option<u8>,
     pub dest_loss_pct: Option<f64>,
     pub dest_avg_ms: Option<f64>,
@@ -108,6 +111,13 @@ pub fn lost_past_end(r: &RoundRecord, ttl: u8, dest: Option<u8>) -> bool {
     !r.reached && ttl > r.path_len && dest.is_some_and(|d| ttl <= d)
 }
 
+/// No probe of the round could be sent: no network on this computer (a cable out, Wi-Fi off).
+/// Such a round measured nothing about the path, so it is neither sent nor lost anywhere; it
+/// stays in the history and shows as a gap.
+pub fn not_sent(r: &RoundRecord) -> bool {
+    !r.hops.is_empty() && r.hops.iter().all(|h| h.kind == ReplyKind::Error)
+}
+
 /// Statistics per TTL over `rounds` (oldest first).
 pub fn hop_stats(rounds: &[RoundRecord]) -> Vec<HopStats> {
     hop_stats_toward(rounds, None)
@@ -116,18 +126,19 @@ pub fn hop_stats(rounds: &[RoundRecord]) -> Vec<HopStats> {
 /// `hop_stats` over the rounds of a period, with `toward` the destination known from the whole
 /// window when none of these rounds reached it.
 pub fn hop_stats_toward(rounds: &[RoundRecord], toward: Option<u8>) -> Vec<HopStats> {
-    let Some(deepest) = rounds.iter().map(|r| r.path_len).max() else {
+    let measured = || rounds.iter().filter(|r| !not_sent(r));
+    let Some(deepest) = measured().map(|r| r.path_len).max() else {
         return Vec::new();
     };
     let reached = reached_dest_ttl(rounds).or(toward);
     let max_ttl = deepest.max(reached.unwrap_or(0));
     // Without a round that reached it, the destination is where most rounds ended.
-    let dest_ttl = reached.or_else(|| most_common(rounds.iter().map(|r| r.path_len)));
+    let dest_ttl = reached.or_else(|| most_common(measured().map(|r| r.path_len)));
 
     let mut rows: Vec<HopStats> = (1..=max_ttl)
         .map(|ttl| {
             let mut acc = Acc::default();
-            for r in rounds {
+            for r in measured() {
                 let Some(h) = r.hop(ttl) else {
                     if lost_past_end(r, ttl, reached) {
                         acc.sent += 1;
@@ -296,11 +307,14 @@ pub fn verdict(rounds: &[RoundRecord], hops: &[HopStats]) -> Verdict {
         .filter_map(|r| r.destination())
         .filter_map(|h| h.rtt_ms())
         .collect();
-    let lost = rounds.iter().filter(|r| !r.reached).count();
+    let not_sent_rounds = rounds.iter().filter(|r| not_sent(r)).count();
+    let measured = rounds.len() - not_sent_rounds;
+    let lost = rounds.iter().filter(|r| !r.reached && !not_sent(r)).count();
     Verdict {
-        rounds: rounds.len(),
+        rounds: measured,
+        not_sent_rounds,
         dest_ttl: dest.map(|d| d.ttl),
-        dest_loss_pct: (!rounds.is_empty()).then(|| 100.0 * lost as f64 / rounds.len() as f64),
+        dest_loss_pct: (measured > 0).then(|| 100.0 * lost as f64 / measured as f64),
         dest_avg_ms: (!reached.is_empty())
             .then(|| reached.iter().sum::<f64>() / reached.len() as f64),
         origin_ttl: origin.map(|o| o.ttl),
@@ -393,6 +407,9 @@ pub enum Outcome {
 /// `None` when the round did not probe that hop (the path was shorter then). `toward`: the
 /// destination known from the rounds around, for `lost_past_end`.
 pub fn outcome(round: &RoundRecord, ttl: Option<u8>, toward: Option<u8>) -> Option<Outcome> {
+    if not_sent(round) {
+        return None;
+    }
     let Some(ttl) = ttl else {
         return Some(match round.destination() {
             Some(h) => Outcome::Reply(h.rtt_ms()),
@@ -631,6 +648,44 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// A round in which no probe could be sent: what the backends make of a computer without a
+    /// network.
+    fn offline(ts_ms: i64) -> RoundRecord {
+        RoundRecord {
+            ts_ms,
+            probe: ProbeKind::Icmp,
+            dst: ip(4),
+            path_len: 1,
+            reached: false,
+            hops: vec![HopSample::lost(1, ReplyKind::Error)],
+        }
+    }
+
+    #[test]
+    fn rounds_without_a_sent_probe_are_neither_sent_nor_lost() {
+        let mut r = rounds(&["++++", "++++", "++++", "++++"]);
+        // Four rounds without a network between them, at 500 ms past each second.
+        let mut all: Vec<RoundRecord> = Vec::new();
+        for x in r.drain(..) {
+            let t = x.ts_ms;
+            all.push(x);
+            all.push(offline(t + 500));
+        }
+        assert!(not_sent(&all[1]) && !not_sent(&all[0]));
+        let h = hop_stats(&all);
+        assert_eq!(h.len(), 4);
+        assert!(h.iter().all(|x| x.sent == 4 && x.recv == 4), "{h:?}");
+        assert!(h[3].is_destination);
+        let v = verdict(&all, &h);
+        assert_eq!((v.rounds, v.not_sent_rounds), (4, 4));
+        assert_eq!(v.dest_loss_pct, Some(0.0));
+        let t = timeline(&all, None, 0, 4000, 1, None);
+        assert_eq!((t[0].sent, t[0].lost), (4, 0));
+        let hop1 = row_stats(&all, Some(1), 0, 4000);
+        assert_eq!((hop1.sent, hop1.loss_pct), (4, 0.0));
+        assert_eq!(outcome(&all[1], None, Some(4)), None);
     }
 
     #[test]

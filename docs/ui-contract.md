@@ -18,6 +18,7 @@ system's own message, in the system's language.
 | `invalid_host` | `add_target` | not a name or an IPv4 address as typed |
 | `resolve_failed` | `add_target`, `Row.error` | the name was not found in DNS; a row keeps trying |
 | `no_ipv4` | `add_target`, `Row.error` | the name (or a typed IPv6 address) has no IPv4 address; only IPv4 is probed |
+| `no_network` | `Row.error` | the latest round could not send a single probe: this computer has no network. Such rounds are not counted as loss anywhere and show as gaps; the code goes away with the next round that sends |
 | `probe_unavailable` | `add_target` (unknown probe type); `Row.error` as `probe_unavailable: <detail>` | probes of this type cannot be sent, the detail says why |
 | `invalid_interval` | `add_target`, `set_interval` | not one of 0.5, 1, 2.5, 5, 10, 30, 60 |
 | `no_such_target` | commands with a row id, `export_report` | the target or the row is gone |
@@ -47,6 +48,7 @@ system's own message, in the system's language.
 | `unpin_hop` | `{ id }` | `null` |
 | `get_settings` | `{}` | `Settings` |
 | `set_settings` | `{ settings: Partial<Settings> }` | `Settings`; values that do not fit are ignored |
+| `clear_history` | `{}` | `null`; deletes every round of every target from disk and memory (targets, pinned hops and settings stay), then shrinks the file |
 | `recent_inputs` | `{}` | `string[]`, last hosts typed, newest first, at most 10 |
 | `export_report` | `{ req: ReportReq }` | `{ dir, files }` |
 | `pick_folder` | `{}` | `string` or `null` (folder dialog) |
@@ -98,7 +100,8 @@ resumes it, then at its saved interval.
   "loss": [],
   "settings": { "warnMs": 100, "badMs": 200, "theme": "system", "lang": "ru", "window": "10m",
                 "geoCheck": true, "home": null },
-  "probesAvailable": ["icmp"], "ratePps": 18, "recent": ["1.1.1.1", "8.8.8.8"],
+  "probesAvailable": ["icmp"], "ratePps": 18, "rateCap": 50, "roundsSkipped": 0, "historyBytes": 37748736,
+  "recent": ["1.1.1.1", "8.8.8.8"],
   "geo": { "state": "ok", "month": "2026-10", "source": "bundled",
            "download": { "state": "running", "month": "2026-11", "received": 1234, "total": 65000000,
                          "error": null } }
@@ -115,6 +118,10 @@ resumes it, then at its saved interval.
 - `history`: 24 hours that end at `toMs`, 200 slots; a slot is listed when any row lost probes in it.
 - `loss` and `ticks`: only the mock sends them (to reproduce the mockups); the interface computes time
   labels from `toMs` (`WT.ticksAt`).
+- `ratePps`: probes a second all rows actually sent over the last 10 seconds. `rateCap`: the ceiling for
+  all rows together (`settings.probeCap`). `roundsSkipped`: rounds not sent over the last minute because a
+  row's share of the ceiling was empty; they are gaps, not loss, and the status bar says so.
+- `historyBytes`: size of the history on disk (the database file and its write-ahead log).
 - `geo`: the places database of the route map (DB-IP City Lite and ASN Lite), in every snapshot.
   - `state`: `ok`; `missing` (there is none: the program came without one, or it was deleted);
     `unreadable` (the files are there but do not open; found out when they are first opened, for a trace
@@ -264,10 +271,10 @@ resumes it, then at its saved interval.
 ## Settings
 
 `{ warnMs: 100, badMs: 200, theme: "system" | "light" | "dark", lang: "ru" | "en", window: "10m",
-geoCheck: true, home: null | { lat, lon } }`.
+geoCheck: true, home: null | { lat, lon }, probeCap: 50, keepDays: 30 }`.
 Thresholds paint the latency background; language and theme apply to the whole window. `window` is the
 window both screens open with: the main screen and the trace screen save it with `set_settings`.
-`geoCheck`: look for a newer places database when the map opens (`geo_check`). `home`: a home put on the
+`probeCap`: probes a second for all targets together: 25, 50, 100 or 200. `keepDays`: days of history kept on disk: 7, 30, 90 or 365, `0` keeps everything; older rounds are deleted in the background. `geoCheck`: look for a newer places database when the map opens (`geo_check`). `home`: a home put on the
 map by hand, in degrees rounded to 0.1°; `null` uses the automatic one (`Trace.home`). In `set_settings`
 a missing `home` key leaves it as it is, `"home": null` clears it, and a point off the globe
 (|lat| > 90 or |lon| > 180) is ignored like any value that does not fit.

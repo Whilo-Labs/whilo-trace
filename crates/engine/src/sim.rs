@@ -55,10 +55,12 @@ enum Scenario {
     Limit,
     Far,
     Jitter,
+    Offline,
 }
 
-/// In address order: the index is what a made-up address carries.
-const SCENARIOS: [Scenario; 9] = [
+/// In address order: the index is what a made-up address carries. New ones go at the end, so
+/// the addresses of the others stay.
+const SCENARIOS: [Scenario; 10] = [
     Scenario::Mixed,
     Scenario::Loss,
     Scenario::Flaky,
@@ -68,10 +70,11 @@ const SCENARIOS: [Scenario; 9] = [
     Scenario::Limit,
     Scenario::Far,
     Scenario::Jitter,
+    Scenario::Offline,
 ];
 
 /// Words of a host name and what they pick; the first one that matches wins.
-const WORDS: [(&str, Scenario); 8] = [
+const WORDS: [(&str, Scenario); 9] = [
     ("down", Scenario::Down),
     ("unreachable", Scenario::Unreachable),
     ("loss", Scenario::Loss),
@@ -80,6 +83,7 @@ const WORDS: [(&str, Scenario); 8] = [
     ("limit", Scenario::Limit),
     ("far", Scenario::Far),
     ("jitter", Scenario::Jitter),
+    ("offline", Scenario::Offline),
 ];
 
 fn scenario_of_name(name: &str) -> Scenario {
@@ -157,6 +161,9 @@ struct Path {
     loss: Option<(u8, f64)>,
     /// Loss that comes and goes.
     episodes: Option<Episodes>,
+    /// The computer has no network for `last_s` seconds of every `every_s` (offset `offset_s`):
+    /// no probe can be sent.
+    offline: Option<(i64, i64, i64)>,
     /// Nothing answers beyond this hop.
     dead_after: Option<u8>,
     /// The router after `dead_after` says the destination is unreachable.
@@ -186,6 +193,7 @@ impl Path {
             silent: None,
             loss: None,
             episodes: None,
+            offline: None,
             dead_after: None,
             unreachable: false,
             spikes: 0.0,
@@ -258,8 +266,15 @@ impl Path {
                 p.spikes = 0.08;
                 p.spike_from = 3 + pick(24, p.len - 3);
             }
+            Scenario::Offline => p.offline = Some((120, 40, (h >> 40) as i64 % 120)),
         }
         p
+    }
+
+    /// No network on the computer at `now_s`.
+    fn offline_at(&self, now_s: i64) -> bool {
+        self.offline
+            .is_some_and(|(every, last, offset)| (now_s + offset).rem_euclid(every) < last)
     }
 
     /// Loss on the way at `now_s`: the steady one or an episode, whichever is worse.
@@ -412,6 +427,12 @@ struct SimProber {
 impl Prober for SimProber {
     fn round(&mut self, spec: &RoundSpec) -> io::Result<Vec<HopSample>> {
         let path = Path::to(spec.dst);
+        if path.offline_at(now_ms() / 1000) {
+            // As the platform backends without a network: every send fails at once.
+            return Ok((1..=spec.max_ttl.clamp(1, MAX_TTL))
+                .map(|ttl| HopSample::lost(ttl, ReplyKind::Error))
+                .collect());
+        }
         // Loss on the path takes the whole round from its hop on, and so does a latency spike.
         let dropped_from = path
             .loss_at(now_ms() / 1000)

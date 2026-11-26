@@ -212,7 +212,15 @@ The router limits how often it answers. If the hops after it answer every probe,
 
 <br>
 
-One small probe per hop per round. Three targets at the default 2.5 s come to about 7 packets per second, a few hundred bytes per second in total; the status bar shows the current rate.
+One small probe per hop per round: a target 10 hops away at the default 2.5 s sends 4 packets per second. A target that does not answer is probed a little past the last router that answered, and the full 30 hops once a minute. All targets together never send more than 50 packets per second (25 to 200 in the settings): rounds over that are skipped and show as gaps, not loss, so the app cannot flood a home router and then report the loss it caused. The status bar shows what was actually sent.
+</details>
+
+<details>
+<summary><b>What if my computer loses its network or goes to sleep?</b></summary>
+
+<br>
+
+Rounds that could not send a single probe are not counted as loss: the timeline shows a gap and the target says "no network". A round cut short by sleep is dropped the same way, so a laptop waking up does not put false loss into a report for your ISP.
 </details>
 
 <details>
@@ -220,7 +228,7 @@ One small probe per hop per round. Three targets at the default 2.5 s come to ab
 
 <br>
 
-In one SQLite file shared by the app and the command line: `%LOCALAPPDATA%\Whilo Trace\history.db` on Windows, `~/.local/share/whilo-trace` on Linux (or `$XDG_DATA_HOME/whilo-trace`), `~/Library/Application Support/Whilo Trace` on macOS.
+In one SQLite file shared by the app and the command line: `%LOCALAPPDATA%\Whilo Trace\history.db` on Windows, `~/.local/share/whilo-trace` on Linux (or `$XDG_DATA_HOME/whilo-trace`), `~/Library/Application Support/Whilo Trace` on macOS. The app keeps 30 days by default (from 7 days to always in the settings, which also show the file size and can clear it). A day of one target at 2.5 s takes about 10 to 15 MB.
 </details>
 
 <details>
