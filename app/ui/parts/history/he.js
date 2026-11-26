@@ -825,10 +825,17 @@
   function findingsOf(o) {
     var r = periodRange(o), full = o.from === 'trace';
     if (!o.data || !r) return [];
-    return lines(o).filter(function (t) { return !t.hopOf; }).map(function (t0) {
-      var t = rowData(o, t0.id) || t0, s = statsOf(o, t);
+    var rows = lines(o).filter(function (t) { return !t.hopOf; }).map(function (t0) { return rowData(o, t0.id) || t0; });
+    var list = rows.map(function (t) {
+      var s = statsOf(o, t);
       return { t: t, f: finding(t, s, roundsOf(t, s, r), full) };
     });
+    // Targets of the report whose loss starts at one router: first, it is the strongest finding.
+    var shared = WT.sharedOrigins ? WT.sharedOrigins(rows, function (t) {
+      var s = statsOf(o, t);
+      return { path: (s && s === t.rangeStats && t.rangePath) || t.path, stats: s };
+    }) : [];
+    return shared.map(function (g) { var x = WT.sharedText(g); return { t: null, f: [x.ru, x.en] }; }).concat(list);
   }
 
   function fsBlock(ru, en, body, extra, cls) {
@@ -952,7 +959,7 @@
     if (!o.data) return '<div class="rp-fnd"><p class="rp-wait">' + L('Считаю выводы…', 'Working out the findings…') + '</p></div>';
     var list = findingsOf(o);
     if (!list.length) return '';
-    if (o.from === 'trace') return '<div class="rp-fnd">' + list.map(function (x) { return '<p>' + chip(x.t) + L(x.f[0], x.f[1]) + '</p>'; }).join('') + '</div>';
+    if (o.from === 'trace') return '<div class="rp-fnd">' + list.map(function (x) { return '<p>' + (x.t ? chip(x.t) : '') + L(x.f[0], x.f[1]) + '</p>'; }).join('') + '</div>';
     var html = list.slice(0, 2).map(function (x) { return '<p>' + L(x.f[0], x.f[1]) + '</p>'; }).join(''), rest = list.length - 2;
     if (rest > 0) {
       var c = cnt(rest, ['цель', 'цели', 'целей'], ['target', 'targets']);
@@ -1305,7 +1312,7 @@
       var req = {
         rows: lines(o).map(function (t) { return t.id; }), fromMs: Math.round(r[0]), toMs: Math.round(r[1]),
         formats: FMT.map(function (f) { return f[0]; }).filter(function (k) { return o.fmt[k]; }), tzOffsetMin: offMin(r[1], o.tz),
-        findings: o.findings ? findingsOf(o).map(function (x) { var s = x.f[en ? 1 : 0]; return o.from === 'trace' ? probeLabel(x.t) + ': ' + s : s; }) : [],
+        findings: o.findings ? findingsOf(o).map(function (x) { var s = x.f[en ? 1 : 0]; return o.from === 'trace' && x.t ? probeLabel(x.t) + ': ' + s : s; }) : [],
         pngBase64: png, dir: o.dir,
       };
       if (map) req.mapPngBase64 = map;

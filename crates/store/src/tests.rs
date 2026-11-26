@@ -797,6 +797,8 @@ fn a_pinned_hop_that_misses_while_the_destination_answers_is_amber_not_red() {
                 interval_s: 1.0,
                 hops: &hops,
                 names: &names,
+                places: &[],
+                changes: &[],
                 timeline: &line,
                 verdict: &v,
                 generated_ms: 8000,
@@ -1068,6 +1070,8 @@ fn a_report_covers_several_targets_in_the_window_language() {
         interval_s: 1.0,
         hops,
         names,
+        places: &[],
+        changes: &[],
         timeline: line,
         verdict: v,
         generated_ms: 8000,
@@ -1169,6 +1173,8 @@ fn a_report_with_the_route_map_shows_it_inline_and_credits_dbip() {
         interval_s: 1.0,
         hops: &hops,
         names: &names,
+        places: &[],
+        changes: &[],
         timeline: &line,
         verdict: &v,
         generated_ms: 4000,
@@ -1284,4 +1290,54 @@ fn old_rounds_are_pruned_with_their_hops() {
     s.clear_history().unwrap();
     assert!(s.load_rounds(a, 0, 20_000).unwrap().is_empty());
     assert_eq!(s.targets().unwrap().len(), 2, "targets stay");
+}
+
+#[test]
+fn hop_csv_has_place_and_network_and_no_formulas() {
+    let r = rounds(&["+++", "+++", "+++"], 1000);
+    let hops = hop_stats(&r);
+    let v = whilo_trace_engine::verdict(&r, &hops);
+    let line = whilo_trace_engine::timeline(&r, None, 0, 3000, 3, None);
+    let names = vec![Some("=HYPERLINK(\"x\")".to_string()), None, None];
+    let places = vec![
+        report::HopPlace::default(),
+        report::HopPlace {
+            place: "Frankfurt am Main, DE".into(),
+            network: "AS1299 Arelion".into(),
+        },
+    ];
+    let rep = report::Report {
+        host: "example.com",
+        dst: r.last().map(|x| x.dst),
+        probe: ProbeKind::Icmp,
+        from_ms: 0,
+        to_ms: 3000,
+        tz_offset_min: 0,
+        interval_s: 1.0,
+        hops: &hops,
+        names: &names,
+        places: &places,
+        changes: &[],
+        timeline: &line,
+        verdict: &v,
+        generated_ms: 3000,
+    };
+    let csv = report::hops_csv(&rep);
+    let lines: Vec<&str> = csv.lines().collect();
+    assert!(lines[0].starts_with("ttl,address,name,place,network,status,"));
+    assert!(
+        lines[1].starts_with("1,10.0.0.1,\"'=HYPERLINK(\"\"x\"\")\",,,"),
+        "{}",
+        lines[1]
+    );
+    assert!(
+        lines[2].starts_with("2,10.0.0.2,,\"Frankfurt am Main, DE\",AS1299 Arelion,"),
+        "{}",
+        lines[2]
+    );
+    assert!(
+        lines[3].starts_with("3,10.0.0.3,,,,"),
+        "a third hop without a place: {}",
+        lines[3]
+    );
 }

@@ -71,7 +71,7 @@
 .mk-ok { background: var(--ok); }
 .mk-loss { background: var(--loss); }
 .mk-partial { background: var(--partial); }
-.mk-noreply, .mk-unreachable { background: var(--muted); }
+.mk-noreply, .mk-unreachable, .mk-route { background: var(--muted); }
 .mk-bg { fill: var(--well); }
 svg.mk { overflow: hidden; }
 .hatch-fill { fill: var(--silent); }
@@ -105,6 +105,7 @@ svg.mk { overflow: hidden; }
 }
 .tr-row > div { min-width: 0; white-space: nowrap; }
 .tr-row > .c-addr, .tr-row > .c-name { overflow: hidden; text-overflow: ellipsis; }
+.tr-row > .c-name .geo { color: var(--muted); }
 .tr-row:hover, .tr-row.is-hover { background: var(--control); }
 .tr-row[aria-selected="true"] { background: var(--selected); }
 .tr-row:focus-visible, .tr-row.is-focus { outline: 2px solid var(--focus-ring); outline-offset: -2px; }

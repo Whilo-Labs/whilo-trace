@@ -135,6 +135,38 @@
     return en ? s.replace(',', '.') : s;
   }
 
+  // Targets whose loss starts at one and the same router: [{ addr, items: [{ host, ttl }] }], groups of two
+  // targets or more. pathOf(t) gives { path, stats } of a target row for the period wanted (window or picked).
+  // A loss that shows up only at the destination is not a router's.
+  function sharedOrigins(rows, pathOf) {
+    var by = {}, order = [];
+    rows.forEach(function (t) {
+      if (t.hopOf) return;
+      var x = pathOf(t) || {}, p = x.path, s = x.stats, o = p && p.origin;
+      if (!o || !o.addr || !s || !(s.lossPct > 0) || o.ttl === p.hops) return;
+      if (!by[o.addr]) { by[o.addr] = []; order.push(o.addr); }
+      if (!by[o.addr].some(function (i) { return i.host === t.host; })) by[o.addr].push({ host: t.host, ttl: o.ttl });
+    });
+    return order.filter(function (a) { return by[a].length > 1; }).map(function (a) { return { addr: a, items: by[a] }; });
+  }
+  function joinAnd(list, en) {
+    if (list.length < 2) return list.join('');
+    return list.slice(0, -1).join(', ') + (en ? ' and ' : ' и ') + list[list.length - 1];
+  }
+  // The finding of a group: { ru, en }.
+  function sharedText(g) {
+    var hosts = g.items.map(function (i) { return i.host; });
+    var ttls = g.items.map(function (i) { return i.ttl; }).filter(function (v, i, a) { return a.indexOf(v) === i; });
+    var hopRu = ttls.length === 1 ? 'хоп ' + ttls[0] : 'хопы ' + joinAnd(ttls.map(String), false);
+    var hopEn = ttls.length === 1 ? 'hop ' + ttls[0] : 'hops ' + joinAnd(ttls.map(String), true);
+    return {
+      ru: 'Потери у ' + joinAnd(hosts, false) + ' начинаются на одном роутере ' + g.addr + ' (' + hopRu + '): скорее всего, проблема на нем или перед ним.',
+      en: 'Loss to ' + joinAnd(hosts, true) + ' starts at the same router ' + g.addr + ' (' + hopEn + '): the trouble is most likely there or before it.',
+    };
+  }
+  // The window or the picked period of a target row, as the summary shows it.
+  function pathNow(t) { return t.rangeStats ? { path: t.rangePath || t.path, stats: t.rangeStats } : { path: t.path, stats: t.stats }; }
+
   // Window statistics for a target or a hop: loss %, avg, min, max, last, jitter.
   // The Rust core sends them ready in t.stats; the formula below is for the mock and for old callers.
   function stats(t) {
@@ -188,6 +220,7 @@
     settings: { warnMs: 100, badMs: 200, theme: 'system', lang: 'ru', window: '10m', geoCheck: true, home: null, probeCap: 50, keepDays: 30,
       closeToTray: true, autostart: false, alerts: true, alertLossPct: 10 },
     probesAvailable: ['icmp'],
+    sharedOrigins: sharedOrigins, sharedText: sharedText, pathNow: pathNow,
     path: { line: line, bars: bars, zone: zone, jitter: jitter, hatch: hatch },
     stats: stats, fmt: fmt, lossNum: lossNum, apply: apply, ticksAt: ticksAt,
   };

@@ -172,6 +172,22 @@ pub struct Trace {
     pub hops: Vec<TraceHop>,
     /// Where the path starts on the map; null without one.
     pub home: Option<TraceHome>,
+    /// Changes of the route over the window, oldest first; empty for a past window that is no
+    /// longer in memory.
+    pub changes: Vec<RouteChangeOut>,
+}
+
+/// A change of the route: `kind` "address" (the target's name resolves to another address),
+/// "router" (the router at `ttl` was replaced, and maybe the ones after it) or "length" (the
+/// destination answers at another TTL: `from` and `to` are TTLs then).
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct RouteChangeOut {
+    pub t_ms: i64,
+    pub kind: String,
+    pub ttl: Option<u8>,
+    pub from: Option<String>,
+    pub to: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]

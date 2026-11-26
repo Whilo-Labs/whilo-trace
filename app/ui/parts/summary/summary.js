@@ -411,8 +411,10 @@
     r.classList.add('sum', 'layer');
     r.innerHTML = '<div class="sum-head"><h2>' + tx('Сводка', 'Summary') + '</h2><span class="sum-meta"></span>' +
       '<button type="button" class="btn btn-sm scr-report" data-act="report">' + I.report + tx('Отчет для провайдера', 'Report for ISP') + '</button></div>' +
+      '<p class="sum-shared" role="status" hidden></p>' +
       '<div class="sum-table" role="table" aria-label="' + esc(L('Сводка целей', 'Target summary')) + '">' + colhead() + '<div class="sum-body"></div></div>';
     v.meta = r.querySelector('.sum-meta');
+    v.shared = r.querySelector('.sum-shared');
     v.table = r.querySelector('.sum-table');
     v.body = r.querySelector('.sum-body');
     var ch = r.querySelector('.sum-colhead').children;
@@ -436,6 +438,11 @@
     else if (c.hour) p = { ru: 'статистика за последний час', en: 'stats for the last hour' };
     else p = { ru: 'статистика за последние ' + c.win.ru, en: 'stats for the last ' + c.win.en };
     set(v.meta, 'sum-meta', tx(n.ru + ' · ' + p.ru, n.en + ' · ' + p.en));
+    // Several targets lose packets from one router: the strongest finding for a provider, above the table.
+    var shared = WT.sharedOrigins ? WT.sharedOrigins(WT.targets || [], WT.pathNow) : [];
+    var line = shared.map(function (g) { var x = WT.sharedText(g); return tx(x.ru, x.en); }).join(' ');
+    if (v.shared.innerHTML !== line) v.shared.innerHTML = line;
+    v.shared.hidden = !line;
     // In the past the columns speak of the frame, not of now: "В 09:00, мс" and the chart "08:50-09:00".
     var end = hm(WT.toMs), frame = hm(WT.fromMs) + '-' + end;
     set(v.colNow, 'sum-r', c.past ? tx('В ' + end + ', мс', 'At ' + end + ', ms') : tx('Сейчас, мс', 'Now, ms'));

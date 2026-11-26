@@ -9,8 +9,8 @@ mod geo;
 mod tray;
 
 use contract::{
-    AddTargetReq, ExportRes, History, HopRef, IdRes, PartialHop, PathSummary, ReportReq, Row,
-    Settings, SettingsPatch, Snapshot, SnapshotReq, Stats, Trace, TraceHop,
+    AddTargetReq, ExportRes, History, HopRef, IdRes, PartialHop, PathSummary, ReportReq,
+    RouteChangeOut, Row, Settings, SettingsPatch, Snapshot, SnapshotReq, Stats, Trace, TraceHop,
 };
 use geo::GeoState;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -28,9 +28,10 @@ use whilo_trace_engine::monitor::resolve_v4;
 use whilo_trace_engine::sim::SimNet;
 use whilo_trace_engine::stats::LOSS_NOTABLE_PCT;
 use whilo_trace_engine::{
-    hop_stats_toward, not_sent, now_ms, spawn_monitor_with, timeline, verdict, Bucket, HopStats,
-    HopStatus, MonitorConfig, MonitorEvent, MonitorHandle, MonitorOptions, ProbeBudget, ProbeKind,
-    Prober, ProberFactory, Resolver, RoundRecord, Verdict,
+    hop_stats_toward, not_sent, now_ms, route_changes, spawn_monitor_with, timeline, verdict,
+    Bucket, HopStats, HopStatus, MonitorConfig, MonitorEvent, MonitorHandle, MonitorOptions,
+    ProbeBudget, ProbeKind, Prober, ProberFactory, Resolver, RoundRecord, RouteChange,
+    RouteChangeKind, Verdict,
 };
 use whilo_trace_store::buckets::{self, Grid, HopInfo, LineStats, Pick, Window};
 use whilo_trace_store::report::{self, Document, PinnedLine, Report, Section};
@@ -841,6 +842,7 @@ fn compute(
         .collect();
     let trace = want_trace.then(|| Trace {
         target: target_row_id(t.id),
+        changes: Vec::new(),
         rounds,
         hops: hops
             .iter()
@@ -909,6 +911,7 @@ impl Core {
         let slot_ms = DAY_MS / HISTORY_SLOTS as i64;
         let mut history: BTreeSet<u32> = BTreeSet::new();
         for t in &infos {
+            let mut disk_changes: Option<Vec<RouteChange>> = None;
             let my_pins: Vec<(i64, &Pin)> = pins
                 .iter()
                 .filter(|(_, p)| p.target_id == t.id)
@@ -936,6 +939,9 @@ impl Core {
                 let rounds = lock(&self.reader)
                     .load_rounds(t.id, f.from_ms, f.to_ms)
                     .map_err(db)?;
+                if want_trace {
+                    disk_changes = Some(route_changes(&rounds));
+                }
                 let mut grid = Grid::build(&rounds, f.b, f.from_k, f.n);
                 if let Some(last) = rounds.last().filter(|_| !rounds.iter().any(|r| r.reached)) {
                     grid.set_known_dest(
@@ -958,6 +964,19 @@ impl Core {
                 d.hist.keep_past(f.b, f.from_k, f.n, grid);
                 c
             };
+            // Changes of the route over the window, for the trace: from memory, or from the rounds
+            // just read from disk; none for a past window kept as buckets only.
+            let mut c = c;
+            if let Some(tr) = c.trace.as_mut() {
+                let found = match disk_changes.take() {
+                    Some(found) => found,
+                    None if live || f.from_ms >= d.hist.complete_from() => {
+                        route_changes(d.hist.rounds_between(f.from_ms, f.to_ms))
+                    }
+                    None => Vec::new(),
+                };
+                tr.changes = found.iter().map(change_out).collect();
+            }
             // Loss marks of the day strip.
             if live || h_from >= d.hist.complete_from() {
                 history.extend(
@@ -1429,6 +1448,8 @@ struct ReportData {
     rounds: Vec<RoundRecord>,
     hops: Vec<HopStats>,
     names: Vec<Option<String>>,
+    places: Vec<whilo_trace_store::report::HopPlace>,
+    changes: Vec<RouteChange>,
     timeline: Vec<Bucket>,
     verdict: Verdict,
     pinned: Vec<PinnedLine>,
@@ -1506,6 +1527,7 @@ impl Core {
                 (t.host.clone(), t.probe, t.interval_s, t.data.clone())
             };
             let rounds = self.rounds_of(&data, tid, from_ms, to_ms)?;
+            let changes = route_changes(&rounds);
             // No round reached the destination in the period: it is where the nearest round
             // found it, as on the screen.
             let toward = match rounds.last() {
@@ -1548,6 +1570,8 @@ impl Core {
                 rounds,
                 hops,
                 names: Vec::new(),
+                places: Vec::new(),
+                changes,
                 timeline: line,
                 verdict: v,
                 pinned,
@@ -1571,6 +1595,13 @@ impl Core {
         for (d, n) in datas.iter_mut().zip(names) {
             d.names = n;
         }
+        // Where the hops are and whose networks, as the trace screen has them.
+        let settings = lock(&self.settings).clone();
+        for d in &mut datas {
+            d.places = self
+                .geo
+                .hop_places(d.rounds.last().map(|r| r.dst), &d.hops, &settings);
+        }
 
         let generated_ms = now_ms();
         let lang = lock(&self.settings).lang.clone();
@@ -1590,6 +1621,8 @@ impl Core {
                         interval_s: d.interval_s,
                         hops: &d.hops,
                         names: &d.names,
+                        places: &d.places,
+                        changes: &d.changes,
                         timeline: &d.timeline,
                         verdict: &d.verdict,
                         generated_ms,
@@ -1822,6 +1855,25 @@ fn set_background(window: tauri::WebviewWindow, dark: bool) -> Result<(), String
     window
         .set_background_color(Some(window_background(dark)))
         .map_err(|e| format!("io: {e}"))
+}
+
+/// A change of the route as the interface takes it.
+fn change_out(c: &RouteChange) -> RouteChangeOut {
+    let ip = |a: Option<IpAddr>| a.map(|a| a.to_string());
+    let (kind, ttl, from, to) = match &c.change {
+        RouteChangeKind::Address { from, to } => ("address", None, ip(Some(*from)), ip(Some(*to))),
+        RouteChangeKind::Router { ttl, from, to } => ("router", Some(*ttl), ip(*from), ip(*to)),
+        RouteChangeKind::Length { from, to } => {
+            ("length", None, Some(from.to_string()), Some(to.to_string()))
+        }
+    };
+    RouteChangeOut {
+        t_ms: c.ts_ms,
+        kind: kind.into(),
+        ttl,
+        from,
+        to,
+    }
 }
 
 /// How often the alerts look at the rounds.

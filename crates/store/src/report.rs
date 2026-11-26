@@ -6,7 +6,9 @@ use serde_json::{json, Value};
 use std::fmt::Write as _;
 use std::net::IpAddr;
 use whilo_trace_engine::stats::LOSS_NOTABLE_PCT;
-use whilo_trace_engine::{Bucket, HopStats, HopStatus, ProbeKind, RoundRecord, Verdict};
+use whilo_trace_engine::{
+    Bucket, HopStats, HopStatus, ProbeKind, RoundRecord, RouteChange, RouteChangeKind, Verdict,
+};
 
 pub const GENERATOR: &str = concat!("Whilo Trace ", env!("CARGO_PKG_VERSION"));
 
@@ -28,10 +30,23 @@ pub struct Report<'a> {
     pub hops: &'a [HopStats],
     /// Reverse DNS names, same order as `hops`.
     pub names: &'a [Option<String>],
+    /// Where each hop is and whose network it is on, same order as `hops`; may be shorter
+    /// (the command line has no places).
+    pub places: &'a [HopPlace],
+    /// Changes of the route over the period, oldest first.
+    pub changes: &'a [RouteChange],
     /// Destination latency and loss over `[from_ms, to_ms)`.
     pub timeline: &'a [Bucket],
     pub verdict: &'a Verdict,
     pub generated_ms: i64,
+}
+
+/// Where a hop is ("Frankfurt am Main, DE", a country, or the home network) and whose network
+/// it is on ("AS1299 Arelion"); empty when unknown.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HopPlace {
+    pub place: String,
+    pub network: String,
 }
 
 /// A hop pinned from a target: its own timeline in the report.
@@ -258,14 +273,10 @@ fn join(ttls: &[u8]) -> String {
 
 pub fn hops_csv(r: &Report) -> String {
     let mut out = String::from(
-        "ttl,address,name,status,loss_pct,sent,recv,last_ms,avg_ms,min_ms,max_ms,jitter_ms\n",
+        "ttl,address,name,place,network,status,loss_pct,sent,recv,last_ms,avg_ms,min_ms,max_ms,jitter_ms\n",
     );
-    for (h, name) in r
-        .hops
-        .iter()
-        .zip(r.names.iter().chain(std::iter::repeat(&None)))
-    {
-        let _ = writeln!(out, "{}", hop_csv_fields(h, name.as_deref(), r.probe));
+    for (i, h) in r.hops.iter().enumerate() {
+        let _ = writeln!(out, "{}", hop_csv_fields(r, i, h));
     }
     out
 }
@@ -273,33 +284,28 @@ pub fn hops_csv(r: &Report) -> String {
 /// The hop tables of every target, with the target in the first column.
 pub fn document_hops_csv(d: &Document) -> String {
     let mut out = String::from(
-        "target,ttl,address,name,status,loss_pct,sent,recv,last_ms,avg_ms,min_ms,max_ms,jitter_ms\n",
+        "target,ttl,address,name,place,network,status,loss_pct,sent,recv,last_ms,avg_ms,min_ms,max_ms,jitter_ms\n",
     );
     for s in &d.sections {
         let r = &s.report;
-        for (h, name) in r
-            .hops
-            .iter()
-            .zip(r.names.iter().chain(std::iter::repeat(&None)))
-        {
-            let _ = writeln!(
-                out,
-                "{},{}",
-                csv_field(r.host),
-                hop_csv_fields(h, name.as_deref(), r.probe)
-            );
+        for (i, h) in r.hops.iter().enumerate() {
+            let _ = writeln!(out, "{},{}", csv_field(r.host), hop_csv_fields(r, i, h));
         }
     }
     out
 }
 
-fn hop_csv_fields(h: &HopStats, name: Option<&str>, probe: ProbeKind) -> String {
+fn hop_csv_fields(r: &Report, i: usize, h: &HopStats) -> String {
+    let name = r.names.get(i).cloned().flatten().unwrap_or_default();
+    let place = r.places.get(i).cloned().unwrap_or_default();
     format!(
-        "{},{},{},{},{:.2},{},{},{},{},{},{},{}",
+        "{},{},{},{},{},{},{:.2},{},{},{},{},{},{},{}",
         h.ttl,
         h.addr.map(|a| a.to_string()).unwrap_or_default(),
-        csv_field(name.unwrap_or("")),
-        csv_field(&status_label(h.status, probe)),
+        csv_field(&name),
+        csv_field(&place.place),
+        csv_field(&place.network),
+        csv_field(&status_label(h.status, r.probe)),
         h.loss_pct,
         h.sent,
         h.recv,
@@ -366,6 +372,36 @@ pub fn json(r: &Report) -> String {
     serde_json::to_string_pretty(&doc).unwrap_or_default()
 }
 
+/// A change of the route in words: "14:02 from hop 6: 203.0.113.5 → 198.51.100.7".
+pub fn change_text(c: &RouteChange, tz_offset_min: i32, ru: bool) -> String {
+    let at = format_time(c.ts_ms, tz_offset_min);
+    let ip = |a: &Option<std::net::IpAddr>| a.map_or("*".to_string(), |a| a.to_string());
+    match &c.change {
+        RouteChangeKind::Address { from, to } if ru => format!("{at}: адрес цели {from} → {to}"),
+        RouteChangeKind::Address { from, to } => format!("{at}: the target address {from} → {to}"),
+        RouteChangeKind::Router { ttl, from, to } if ru => {
+            format!(
+                "{at}: маршрут сменился с хопа {ttl}: {} → {}",
+                ip(from),
+                ip(to)
+            )
+        }
+        RouteChangeKind::Router { ttl, from, to } => {
+            format!(
+                "{at}: the route changed from hop {ttl}: {} → {}",
+                ip(from),
+                ip(to)
+            )
+        }
+        RouteChangeKind::Length { from, to } if ru => {
+            format!("{at}: цель отвечает на хопе {to} вместо {from}")
+        }
+        RouteChangeKind::Length { from, to } => {
+            format!("{at}: the destination answers at hop {to} instead of {from}")
+        }
+    }
+}
+
 /// One target; `engine_findings` adds the engine's own findings (the command line only).
 fn target_json(r: &Report, engine_findings: bool) -> Value {
     let hops: Vec<Value> = r
@@ -375,6 +411,9 @@ fn target_json(r: &Report, engine_findings: bool) -> Value {
         .map(|(i, h)| {
             let mut v = serde_json::to_value(h).unwrap_or(Value::Null);
             v["name"] = json!(r.names.get(i).cloned().flatten());
+            let place = r.places.get(i).cloned().unwrap_or_default();
+            v["place"] = json!((!place.place.is_empty()).then_some(place.place));
+            v["network"] = json!((!place.network.is_empty()).then_some(place.network));
             v
         })
         .collect();
@@ -386,6 +425,10 @@ fn target_json(r: &Report, engine_findings: bool) -> Value {
         "verdict": r.verdict,
         "hops": hops,
         "timeline": r.timeline,
+        "changes": r.changes.iter().map(|c| json!({
+            "t_ms": c.ts_ms,
+            "text": change_text(c, 0, false),
+        })).collect::<Vec<_>>(),
     });
     if engine_findings {
         v["findings"] = json!(verdict_lines(r.verdict, r.probe));
@@ -661,6 +704,22 @@ pub fn document_html(d: &Document) -> String {
             header_cells(&w),
             hop_rows(r, d.lang)
         );
+        if !r.changes.is_empty() {
+            let items: String = r
+                .changes
+                .iter()
+                .map(|c| format!("<li>{}</li>", esc(&change_text(c, d.tz_offset_min, ru))))
+                .collect();
+            let _ = write!(
+                body,
+                "<h3>{}</h3><ul class=\"changes\">{items}</ul>",
+                if ru {
+                    "Изменения маршрута"
+                } else {
+                    "Changes of the route"
+                }
+            );
+        }
     }
     let methods = method_any(d);
     format!(
@@ -685,6 +744,7 @@ th, td {{ padding: 6px 8px; border-bottom: 1px solid #e6e9f0; text-align: left; 
 th {{ color: #5b6475; font-weight: 600; }}
 td.num, th.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
 .mono {{ font-family: ui-monospace, Consolas, monospace; }}
+.sub {{ color: #6b7280; font-size: 12px; }}
 .badge {{ border-radius: 10px; padding: 1px 8px; font-size: 12px; background: #e8f5ee; color: #17663f; }}
 tr.silent td, tr.noreply td {{ color: #8a92a3; }}
 tr.silent .badge, tr.noreply .badge, tr.unreachable .badge {{ background: #eef0f4; color: #5b6475; }}
@@ -788,6 +848,21 @@ fn hop_rows(r: &Report, lang: &str) -> String {
     let mut rows = String::new();
     for (i, h) in r.hops.iter().enumerate() {
         let name = r.names.get(i).cloned().flatten().unwrap_or_default();
+        // Where the hop is and whose network, under its name.
+        let place = r.places.get(i).cloned().unwrap_or_default();
+        let sub: Vec<&str> = [place.place.as_str(), place.network.as_str()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect();
+        let name = if sub.is_empty() {
+            esc(&name)
+        } else {
+            format!(
+                "{}<div class=\"sub\">{}</div>",
+                esc(&name),
+                esc(&sub.join(" · "))
+            )
+        };
         let class = match h.status {
             HopStatus::Ok => "ok",
             HopStatus::Silent => "silent",
@@ -804,7 +879,7 @@ fn hop_rows(r: &Report, lang: &str) -> String {
              <td class=\"num\">{}</td><td class=\"num\">{}</td><td><span class=\"badge\">{}</span></td></tr>",
             h.ttl,
             h.addr.map(|a| a.to_string()).unwrap_or_else(|| "*".into()),
-            esc(&name),
+            name,
             num(h.loss_pct, 1, ru),
             h.sent,
             ms_in(h.avg_ms, ru),
@@ -1032,7 +1107,17 @@ fn fmt_duration(ms: i64, ru: bool) -> String {
     }
 }
 
+/// A text cell of a CSV file. A cell that starts like a formula (`=`, `+`, `-`, `@`, a tab or a
+/// carriage return) gets a leading `'`: a spreadsheet would run it, and the names of routers come
+/// from other people's DNS.
 fn csv_field(s: &str) -> String {
+    let defanged;
+    let s = if s.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        defanged = format!("'{s}");
+        defanged.as_str()
+    } else {
+        s
+    };
     if s.contains([',', '"', '\n']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {

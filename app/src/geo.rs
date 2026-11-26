@@ -20,9 +20,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager, State};
+use whilo_trace_engine::HopStats;
 use whilo_trace_geo::files::{self, Candidate, Layout};
 use whilo_trace_geo::update::{self, Offer, Updater};
 use whilo_trace_geo::{FakeGeo, GeoDb, GeoError, HopIn, LatLon, Locate, Located};
+use whilo_trace_store::report::HopPlace;
 
 /// What the geo commands answer on the simulated network: it never reaches DB-IP, and its
 /// places are made up, so there is nothing to update or remove.
@@ -257,6 +259,48 @@ impl GeoState {
         for (hop, place) in trace.hops.iter_mut().zip(places) {
             hop.geo = place.map(|g| hop_geo(g, lang));
         }
+    }
+
+    /// Where the hops of a report are and whose networks, as text in the interface language;
+    /// none without a target address. The same places as the trace screen shows.
+    pub fn hop_places(
+        &self,
+        target: Option<IpAddr>,
+        hops: &[HopStats],
+        settings: &Settings,
+    ) -> Vec<HopPlace> {
+        let Some(target) = target else {
+            return Vec::new();
+        };
+        let ins: Vec<HopIn> = hops
+            .iter()
+            .map(|h| HopIn {
+                ttl: h.ttl,
+                addr: h.addr,
+                rtt_min_ms: h.min_ms,
+                dest: h.is_destination,
+            })
+            .collect();
+        let manual = settings.home.map(|h| LatLon::new(h.lat, h.lon));
+        let places = match &self.fake {
+            Some(fake) => whilo_trace_geo::enrich(fake, target, &ins, manual, true).1,
+            None => {
+                let db = self.reader();
+                let loc: &dyn Locate = match &db {
+                    Some(db) => db.as_ref(),
+                    None => &Nowhere,
+                };
+                whilo_trace_geo::enrich(loc, target, &ins, manual, false).1
+            }
+        };
+        let lang = settings.lang.as_str();
+        places
+            .into_iter()
+            .map(|p| {
+                p.map(|g| place_text(&hop_geo(g, lang), lang))
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 
     /// The databases, opened the first time a trace needs them; none without readable ones.
@@ -522,6 +566,51 @@ fn home_of(h: whilo_trace_geo::Home, lang: &str) -> TraceHome {
         source: if h.manual { "manual" } else { "auto" }.into(),
         ttl: h.ttl,
     }
+}
+
+/// A place as a report prints it: "Frankfurt am Main, DE", a country, the home network or the
+/// provider's carrier-grade NAT; and the network as "AS1299 Arelion". A place the round trip
+/// rules out says so.
+fn place_text(g: &HopGeo, lang: &str) -> HopPlace {
+    let en = lang == "en";
+    let mut place = match g.level.as_str() {
+        "own" if g.special.as_deref() == Some("cgnat") => if en {
+            "provider's CGNAT"
+        } else {
+            "CGNAT провайдера"
+        }
+        .to_string(),
+        "own" => if en {
+            "home network"
+        } else {
+            "домашняя сеть"
+        }
+        .to_string(),
+        "city" => match (&g.city, &g.cc) {
+            (Some(c), Some(cc)) => format!("{c}, {cc}"),
+            (Some(c), None) => c.clone(),
+            (None, _) => g.country.clone().unwrap_or_default(),
+        },
+        "country" => g
+            .country
+            .clone()
+            .or_else(|| g.cc.clone())
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    if g.verdict.as_deref() == Some("impossible") && !place.is_empty() {
+        place.push_str(if en {
+            " (ruled out by the round trip)"
+        } else {
+            " (по задержке невозможно)"
+        });
+    }
+    let network = match (g.asn, &g.as_org) {
+        (Some(n), Some(o)) => format!("AS{n} {o}"),
+        (Some(n), None) => format!("AS{n}"),
+        _ => String::new(),
+    };
+    HopPlace { place, network }
 }
 
 fn hop_geo(g: whilo_trace_geo::HopGeo, lang: &str) -> HopGeo {

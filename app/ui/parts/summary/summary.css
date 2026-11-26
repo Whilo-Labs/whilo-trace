@@ -9,6 +9,7 @@
 .sum[hidden] { display: none; }
 .sum-head { display: flex; align-items: center; gap: 12px; min-height: 28px; padding: 0 var(--s2) var(--s2); }
 .sum-head h2 { font-size: 16px; white-space: nowrap; }
+.sum-shared { margin: 0 0 10px; color: var(--loss-text); font-size: 13px; }
 .sum-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted); }
 .sum-head .scr-report { margin-left: auto; flex: none; }
 .sum-head .scr-report svg { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }

@@ -407,6 +407,8 @@ fn export(
         interval_s,
         hops: &hops,
         names: &names,
+        places: &[],
+        changes: &[],
         timeline: &line,
         verdict: &v,
         generated_ms: to_ms,

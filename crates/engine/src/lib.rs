@@ -6,6 +6,7 @@
 //! when every round waits for the timeout.
 
 pub mod budget;
+pub mod changes;
 pub mod dns;
 pub mod monitor;
 pub mod probe;
@@ -13,6 +14,7 @@ pub mod sim;
 pub mod stats;
 
 pub use budget::{BudgetShare, ProbeBudget, DEFAULT_PROBES_PER_S};
+pub use changes::{route_changes, Change as RouteChangeKind, RouteChange};
 pub use monitor::{
     now_ms, spawn_monitor, spawn_monitor_with, MonitorConfig, MonitorEvent, MonitorHandle,
     MonitorOptions, ProbeKind, ProberFactory, Resolver, RoundRecord, MIN_INTERVAL,

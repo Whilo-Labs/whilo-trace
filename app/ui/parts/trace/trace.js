@@ -293,6 +293,7 @@
     }
     m.kind = 'trace'; m.main = main; m.hops = hops; m.dest = dest; m.lead = lead; m.scale = nice(top);
     m.rounds = rounds; m.range = idx ? st.range : null; m.idx = idx; m.selected = sel;
+    m.changes = (tr && tr.changes) || [];
     return m;
   }
   function hopOf(m, ttl) { return m.hops.filter(function (h) { return h.ttl === ttl; })[0]; }
@@ -421,6 +422,14 @@
         items += li('loss', S('Потери начинаются на ', 'The loss starts at ') + HL(o.ttl, 'хопе ' + o.ttl, 'hop ' + o.ttl) +
           (o.addr ? S(' (', ' (') + ip(o.addr) + S(') и продолжаются до цели.', ') and carries on to the destination.')
                   : S(' и продолжаются до цели.', ' and carries on to the destination.')));
+        // The same router starts the loss of other targets too: the trouble is most likely there or before it.
+        var others = !o.addr || !WT.sharedOrigins ? [] : WT.sharedOrigins(WT.targets || [], WT.pathNow)
+          .filter(function (g) { return g.addr === o.addr; })
+          .map(function (g) { return g.items.map(function (i) { return i.host; }).filter(function (h) { return h !== (m.target && m.target.host); }); })[0] || [];
+        if (others.length) {
+          items += li('loss', S('Тот же роутер начинает потери и у ' + others.join(', ') + ': скорее всего, проблема на нем или перед ним.',
+            'The same router starts the loss of ' + others.join(', ') + ' too: the trouble is most likely there or before it.'));
+        }
       } else if (o && o === dest) {
         var clean = m.hops.every(function (h) { return h === dest || h.status === 'ok' || h.status === 'silent'; });
         items += li('loss', clean
@@ -457,6 +466,19 @@
           S(' отвечает не на все пробы ' + pn.ru + '.', ' answers only some ' + pn.en + ' probes.'));
       }
     });
+    // Changes of the route over the window, the latest three.
+    var ch = (m.changes || []).filter(function (c) { return !m.range || (c.tMs >= m.range[0] && c.tMs < m.range[1]); });
+    if (ch.length) {
+      var shown = ch.slice(-3).map(function (c) {
+        var at = clock(c.tMs);
+        if (c.kind === 'address') return S(at.ru + ' адрес цели ' + c.from + ' → ' + c.to, at.en + ' the target address ' + c.from + ' → ' + c.to);
+        if (c.kind === 'length') return S(at.ru + ' цель отвечает на хопе ' + c.to + ' вместо ' + c.from, at.en + ' the destination answers at hop ' + c.to + ' instead of ' + c.from);
+        return S(at.ru + ' с хопа ' + c.ttl + ': ' + (c.from || '*') + ' → ' + (c.to || '*'), at.en + ' from hop ' + c.ttl + ': ' + (c.from || '*') + ' → ' + (c.to || '*'));
+      });
+      var more = ch.length - shown.length;
+      items += li('route', S('Маршрут менялся: ', 'The route changed: ') + shown.join('; ') +
+        (more > 0 ? S('; и еще ' + more + ' раньше.', '; and ' + more + ' more before.') : S('.', '.')));
+    }
     if (items) out += '<ul>' + items + '</ul>';
     return out + note + '</section>';
   }
@@ -596,12 +618,28 @@
     }).join('');
   }
 
+  // «Frankfurt am Main, DE · AS1299 Arelion»: the place of a hop (hops[].geo) and its network, or null.
+  function geoLine(g) {
+    if (!g) return null;
+    var place = { ru: '', en: '' };
+    if (g.level === 'own') place = g.special === 'cgnat' ? { ru: 'CGNAT провайдера', en: "provider's CGNAT" } : { ru: 'домашняя сеть', en: 'home network' };
+    else if (g.level === 'city' && g.city) place = { ru: g.city + (g.cc ? ', ' + g.cc : ''), en: g.city + (g.cc ? ', ' + g.cc : '') };
+    else if (g.level === 'city' || g.level === 'country') { var c = g.country || g.cc || ''; place = { ru: c, en: c }; }
+    if (place.ru && g.verdict === 'impossible') place = { ru: place.ru + ' (по задержке невозможно)', en: place.en + ' (ruled out by the round trip)' };
+    var net = g.asn ? 'AS' + g.asn + (g.asOrg ? ' ' + g.asOrg : '') : '';
+    var ru = [place.ru, net].filter(Boolean).join(' · '), en = [place.en, net].filter(Boolean).join(' · ');
+    return ru ? { ru: ru, en: en } : null;
+  }
+
   function row(h, m, mx) {
     var s = h.s, sel = m.selected === h.ttl, c = '';
     c += '<div class="c-ttl r num">' + h.ttl + '</div>';
     c += '<div class="c-addr mono">' + (h.addr ? esc(h.addr) : '<span class="unk" title="' + esc(L('Адрес неизвестен: узел не ответил', 'Address unknown: the node did not answer')) + '">*</span>') + '</div>';
-    var nm = nameP(h.name);
-    c += '<div class="c-name"' + (nm ? ' title="' + esc(L(nm.ru, nm.en)) + '"' : '') + '>' + (nm ? P(nm) : '') + '</div>';
+    // The name, then where the hop is and whose network (the places of the route map), in grey.
+    var nm = nameP(h.name), gl = geoLine(h.geo);
+    var tip = [nm ? L(nm.ru, nm.en) : '', gl ? L(gl.ru, gl.en) : ''].filter(Boolean).join(' · ');
+    c += '<div class="c-name"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + (nm ? P(nm) : '') +
+      (gl ? '<span class="geo">' + (nm ? ' · ' : '') + S(gl.ru, gl.en) + '</span>' : '') + '</div>';
     if (s) {
       // One rule with the summary: real loss in «Потери»; a node that answers only some probes gets the no-reply share in grey.
       var nr = h.status === 'partial' && s.noReplyPct > 0 ? pr(s.noReplyPct) : null;
