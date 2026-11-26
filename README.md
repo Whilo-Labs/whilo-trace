@@ -29,12 +29,12 @@
 |---|---|
 | **Monitoring** | Several hosts at once, an interval per host from 0.5 to 60 s (2.5 s by default), pause and resume. A round sends one probe per TTL, all in flight together, and rounds overlap, so a short interval holds even when hops stay silent. |
 | **Timelines** | A latency line over a background coloured by thresholds (100 and 200 ms by default), solid red columns for loss, amber marks for hops that answer only some probes, hatching for hops that ignore this probe type, a jitter strip and tooltips. Drag across a chart to get the numbers for that period. |
-| **Trace** | Findings in plain text, a hop table with neutral statuses and latency bands, and the hop's timeline with the destination under it. Pin any hop to the main screen. |
+| **Trace** | Findings in plain text, a hop table with neutral statuses, latency bands and where each hop is and whose network it is on, and the hop's timeline with the destination under it. The findings list route changes over the window, and say so when the loss of several targets starts at the same router. Compare the window with the same time a day or a week before, hop by hop. Pin any hop to the main screen. |
 | **Route map** | The path on a world map, with router places from the DB-IP Lite database that comes with the app: no online maps, and lookups stay on your computer. A speed-of-light check marks the places that the measured round trip rules out. Zoom and pan; a route with a long jump, as across an ocean, opens on its main part with a pointer to the rest. A packet runs along the route with the target's latest round; full screen; a picture for publishing that hides your addresses and your provider's first hops. |
-| **History** | Everything is kept locally in SQLite. A day strip with loss marks opens any moment of the past, also older than 24 hours. |
-| **Report for your ISP** | Any period as HTML, PNG, CSV and JSON, with the time zone and the findings, in the interface language. |
+| **History** | Everything is kept locally in SQLite, 30 days by default. A strip of the last day, week or month with loss marks opens any moment of the past. |
+| **Report for your ISP** | Any period as HTML, PNG, CSV and JSON, with the time zone, the findings, the route changes and the places and networks of the hops, in the interface language. The CSV files are safe to open in a spreadsheet. |
 | **In the background** | Closing the window leaves the app in the notification area, still probing; it can start with the system. A notification comes when a target stops answering for a minute or the loss to it reaches 10% (5 to 20% in the settings), naming the hop where the loss starts, and again when it is over. |
-| **Interface** | English and Russian; light, dark or system theme; reorder targets by drag and drop, and the order is kept. |
+| **Interface** | English and Russian; light, dark or system theme; reorder targets by drag and drop, and the order is kept. Shortcuts: Ctrl+N for a new target, Ctrl+1 to Ctrl+6 for the window, Ctrl+, for the settings. |
 
 ## Screenshots
 
@@ -70,6 +70,8 @@ Get the latest version from **[Releases](https://github.com/Whilo-Labs/whilo-tra
 | | `whilo-trace_*_amd64.deb` | Debian, Ubuntu and derivatives |
 | macOS (Apple silicon and Intel) | `whilo-trace-*-macos-universal.dmg` | Drag the app to Applications |
 | Command line, Linux and macOS | `whilo-trace-cli-*.tar.gz` | On Windows it is in the portable zip |
+
+Each release has `SHA256SUMS.txt` with the checksums of its files. The portable zip keeps the history and settings in a `data` folder next to the program.
 
 The app downloads include the places database of the [route map](#route-map) (DB-IP Lite, about 130 MB unpacked), so they are larger than before: about 47 MB for the Windows installer, 74 to 77 MB for the portable zip, the deb and the dmg, and 143 MB for the AppImage. The command line downloads do not include it.
 
@@ -237,7 +239,15 @@ Rounds that could not send a single probe are not counted as loss: the timeline 
 
 <br>
 
-In one SQLite file shared by the app and the command line: `%LOCALAPPDATA%\Whilo Trace\history.db` on Windows, `~/.local/share/whilo-trace` on Linux (or `$XDG_DATA_HOME/whilo-trace`), `~/Library/Application Support/Whilo Trace` on macOS. The app keeps 30 days by default (from 7 days to always in the settings, which also show the file size and can clear it). A day of one target at 2.5 s takes about 10 to 15 MB.
+In one SQLite file shared by the app and the command line: `%LOCALAPPDATA%\Whilo Trace\history.db` on Windows, `~/.local/share/whilo-trace` on Linux (or `$XDG_DATA_HOME/whilo-trace`), `~/Library/Application Support/Whilo Trace` on macOS. The portable copy keeps it in the `data` folder next to `whilo-trace.exe`. The app keeps 30 days by default (from 7 days to always in the settings, which also show the file size and can clear it). A day of one target at 2.5 s takes about 10 to 15 MB. Next to the history, `error.log` records what went wrong; attaching it to an issue helps.
+</details>
+
+<details>
+<summary><b>Does it check for updates?</b></summary>
+
+<br>
+
+Only if you agree. The status bar asks once; with yes, the app asks GitHub for the latest release once a day and shows "Version X is out" with a link to the release page. Nothing is downloaded or installed by itself. You can change the answer in the settings.
 </details>
 
 <details>

@@ -50,6 +50,8 @@ system's own message, in the system's language.
 | `set_settings` | `{ settings: Partial<Settings> }` | `Settings`; values that do not fit are ignored; `autostart` changes the system's own entry first and fails with `autostart_failed: <detail>` when the system refuses |
 | `show_window` | `{}` | `null`; brings the main window up from the notification area |
 | `clear_history` | `{}` | `null`; deletes every round of every target from disk and memory (targets, pinned hops and settings stay), then shrinks the file |
+| `compare_periods` | `{ req: { target, before: [fromMs, toMs], after: [fromMs, toMs] } }` | `CompareRes` (below); `target` is a target row id, periods are half-open and end no later than now |
+| `open_releases` | `{}` | `null`; opens the page of the latest release in the browser |
 | `recent_inputs` | `{}` | `string[]`, last hosts typed, newest first, at most 10 |
 | `export_report` | `{ req: ReportReq }` | `{ dir, files }` |
 | `pick_folder` | `{}` | `string` or `null` (folder dialog) |
@@ -76,7 +78,7 @@ resumes it, then at its saved interval.
 ## SnapshotReq
 
 ```json
-{ "window": "10m", "endMs": null, "range": null, "trace": null, "buckets": 120 }
+{ "window": "10m", "endMs": null, "range": null, "trace": null, "buckets": 120, "historyDays": 1 }
 ```
 
 - `window`: `5m`, `10m`, `30m`, `1h`, `6h`, `24h`.
@@ -88,6 +90,7 @@ resumes it, then at its saved interval.
 - `trace`: row id of the target on the trace screen; `null` on the main screen. A pinned hop id or an
   unknown id gives `trace: null`, not an error.
 - `buckets`: N, default 120 (10 minutes in 5-second buckets, as in the mockups).
+- `historyDays`: what the history strip covers: 1 (default), 7 or 30 days; other values are 1.
 
 ## Snapshot
 
@@ -102,6 +105,7 @@ resumes it, then at its saved interval.
   "settings": { "warnMs": 100, "badMs": 200, "theme": "system", "lang": "ru", "window": "10m",
                 "geoCheck": true, "home": null },
   "probesAvailable": ["icmp"], "ratePps": 18, "rateCap": 50, "roundsSkipped": 0, "historyBytes": 37748736,
+  "update": null,
   "recent": ["1.1.1.1", "8.8.8.8"],
   "geo": { "state": "ok", "month": "2026-10", "source": "bundled",
            "download": { "state": "running", "month": "2026-11", "received": 1234, "total": 65000000,
@@ -116,13 +120,17 @@ resumes it, then at its saved interval.
 - `targets`: rows of the main screen in the user's order. A target has one row per probe type (only ICMP
   now). Pinned hops are rows too, with `hopOf` and `hop`.
 - `trace`: only when `req.trace` is a target row id.
-- `history`: 24 hours that end at `toMs`, 200 slots; a slot is listed when any row lost probes in it.
+- `history`: `req.historyDays` days (24 hours by default) that end at `toMs`, 200 slots; a slot is listed
+  when any row lost probes in it. Over 7 and 30 days the loss is known by the minute: a slot is listed when
+  a minute in it had a lost round. Rounds that could not send a probe (no network) are no loss.
 - `loss` and `ticks`: only the mock sends them (to reproduce the mockups); the interface computes time
   labels from `toMs` (`WT.ticksAt`).
 - `ratePps`: probes a second all rows actually sent over the last 10 seconds. `rateCap`: the ceiling for
   all rows together (`settings.probeCap`). `roundsSkipped`: rounds not sent over the last minute because a
   row's share of the ceiling was empty; they are gaps, not loss, and the status bar says so.
 - `historyBytes`: size of the history on disk (the database file and its write-ahead log).
+- `update`: a newer version that is out (`"0.5.0"`), from the daily check the user agreed to
+  (`settings.updateCheck`); `null` when none is known.
 - `geo`: the places database of the route map (DB-IP City Lite and ASN Lite), in every snapshot.
   - `state`: `ok`; `missing` (there is none: the program came without one, or it was deleted);
     `unreadable` (the files are there but do not open; found out when they are first opened, for a trace
@@ -218,6 +226,11 @@ resumes it, then at its saved interval.
 ```
 
 - `rounds`: rounds of the window. The rounds of a picked period are the target row's `rangeStats.sent`.
+- `changes`: changes of the route over the window, oldest first: `{ tMs, kind, ttl, from, to }`. `kind`:
+  `address` (the target's address changed: `from` and `to` are addresses), `router` (another router
+  answers at `ttl` and maybe after it; `from` and `to` are its addresses, `null` when it did not answer),
+  `length` (the destination answers at another TTL: `from` and `to` are TTLs). A load balancer that
+  alternates between routers and a short detour are no change.
 - Hops have the same fields as rows; `status`, `origin` and `dest` are for the whole window, the status
   over a picked period is `rangeStats.status`.
 - `home`: where the path starts on the route map, `null` without one. `source: "auto"`: the first hop in
@@ -273,17 +286,35 @@ resumes it, then at its saved interval.
 
 `{ warnMs: 100, badMs: 200, theme: "system" | "light" | "dark", lang: "ru" | "en", window: "10m",
 geoCheck: true, home: null | { lat, lon }, probeCap: 50, keepDays: 30, closeToTray: true, autostart: false,
-alerts: true, alertLossPct: 10 }`.
+alerts: true, alertLossPct: 10, updateCheck: null }`.
 `closeToTray`: closing the window leaves the app in the notification area, probing; `false` quits.
 `autostart`: the app starts in the notification area when the user signs in; it reflects the system's own
 entry and is not saved in the history file. `alerts`: notifications when a target stops answering for a
-minute or the loss to it over 2 minutes reaches `alertLossPct` (5, 10 or 20).
+minute or the loss to it over 2 minutes reaches `alertLossPct` (5, 10 or 20). `updateCheck`: look for a
+newer version once a day (`Snapshot.update`); `null` means the user has not been asked yet, and the
+status bar asks.
 Thresholds paint the latency background; language and theme apply to the whole window. `window` is the
 window both screens open with: the main screen and the trace screen save it with `set_settings`.
 `probeCap`: probes a second for all targets together: 25, 50, 100 or 200. `keepDays`: days of history kept on disk: 7, 30, 90 or 365, `0` keeps everything; older rounds are deleted in the background. `geoCheck`: look for a newer places database when the map opens (`geo_check`). `home`: a home put on the
 map by hand, in degrees rounded to 0.1°; `null` uses the automatic one (`Trace.home`). In `set_settings`
 a missing `home` key leaves it as it is, `"home": null` clears it, and a point off the globe
 (|lat| > 90 or |lon| > 180) is ignored like any value that does not fit.
+
+## CompareRes
+
+```json
+{ "before": { "rounds": 1440, "lossPct": 8.2, "avgMs": 52.4 },
+  "after": { "rounds": 1438, "lossPct": 0.3, "avgMs": 41.1 },
+  "hops": [ { "ttl": 5, "addrA": "203.0.113.17", "addrB": "203.0.113.42", "lossA": 0, "lossB": 0,
+              "avgA": 18, "avgB": 17, "dest": false, "verdict": "rerouted" } ] }
+```
+
+- `before`, `after`: the destination in each period: rounds, loss (%), average round trip (ms); `null`
+  numbers when the period has no rounds or no replies.
+- `hops`: one per TTL of the longer path. `verdict`: `same`; `worse` or `better` (loss on the path or at
+  the destination differs by 2 points or more, or the average round trip by 10 ms and 20 % of the first
+  value); `rerouted` (another router answers); `new` (a router answers where none did); `gone`. A router
+  that limits its own answers counts no loss.
 
 ## ReportReq
 
