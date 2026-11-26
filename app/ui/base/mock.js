@@ -161,7 +161,7 @@
   rows.forEach(function (r) { if (!r.hopOf) r.path = pathOf(r.probe, traceOf(r.host)); });
 
   var settings = { warnMs: 100, badMs: 200, theme: 'system', lang: 'ru', window: '10m', geoCheck: true, home: null, probeCap: 50, keepDays: 30,
-    closeToTray: true, autostart: false, alerts: true, alertLossPct: 10 };
+    closeToTray: true, autostart: false, alerts: true, alertLossPct: 10, updateCheck: null };
   try { Object.assign(settings, JSON.parse(sessionStorage.getItem('wt-mock-settings') || '{}')); } catch (e) { /* no storage */ }
   var recent = ['1.1.1.1', '8.8.8.8', 'store.steampowered.com', 'www.upwork.com'];
   var seq = 100, listeners = {};
@@ -378,7 +378,7 @@
       history: { fromMs: to - 86400000, toMs: to, slots: 200, loss: HISTORY.slice() },
       loss: LOSS.slice(), ticks: TICKS, settings: copy(settings), probesAvailable: ['icmp'],
       ratePps: rows.filter(function (r) { return !r.paused; }).length ? 18 : 0, rateCap: settings.probeCap, roundsSkipped: 0,
-      historyBytes: 37748736, recent: recent.slice(),
+      historyBytes: 37748736, update: null, recent: recent.slice(),
       geo: geoState(),
     };
     // The mockup labels are for 16:00; once time moves (?mock=live) or the past is shown, WT.ticksAt(toMs) makes them.
@@ -452,6 +452,7 @@
     },
     recent_inputs: function () { return recent.slice(); },
     clear_history: function () { return null; },
+    open_releases: function () { return null; },
     export_report: function (a) {
       var r = a.req || {}, names = { html: 'report.html', png: 'timeline.png', csv: 'hops.csv', json: 'report.json' };
       var files = (r.formats || []).map(function (f) { return names[f]; }).filter(Boolean);

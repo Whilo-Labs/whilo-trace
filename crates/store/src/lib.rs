@@ -651,6 +651,9 @@ fn migrate(conn: &Connection) -> Result<()> {
 
 /// Per-user data folder shared by the GUI and the CLI.
 pub fn data_dir() -> PathBuf {
+    if let Some(dir) = portable_dir() {
+        return dir;
+    }
     #[cfg(windows)]
     if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
         return PathBuf::from(dir).join("Whilo Trace");
@@ -666,6 +669,14 @@ pub fn data_dir() -> PathBuf {
         return PathBuf::from(home).join(".local/share/whilo-trace");
     }
     PathBuf::from(".")
+}
+
+/// A portable copy (a `portable.txt` file next to the program) keeps its history, settings and
+/// places database in a `data` folder beside it, so it runs from a USB stick as it is.
+pub fn portable_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    dir.join("portable.txt").is_file().then(|| dir.join("data"))
 }
 
 pub fn default_db_path() -> PathBuf {

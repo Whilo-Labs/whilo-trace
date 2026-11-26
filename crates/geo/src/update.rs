@@ -326,6 +326,21 @@ impl Updater {
         }
     }
 
+    /// The text at `base` + `path` (an answer of an API, not a database), at most `max` bytes;
+    /// anything but 200 is an error.
+    pub fn fetch_text(&self, path: &str, max: u64) -> Result<String, GeoError> {
+        let response = call(self.agent.get(format!("{}{path}", self.base)), None)?;
+        match response.status().as_u16() {
+            200 => response
+                .into_body()
+                .with_config()
+                .limit(max)
+                .read_to_string()
+                .map_err(|e| GeoError::Net(e.to_string())),
+            status => Err(GeoError::Http(status)),
+        }
+    }
+
     /// The URL of DB-IP's compressed `file`.
     fn url(&self, file: &str) -> String {
         format!("{}{file}.gz", self.base)

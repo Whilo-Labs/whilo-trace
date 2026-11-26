@@ -258,6 +258,8 @@
       '<p class="wth-hint">' + T('Потери до цели от', 'Loss to a target from') + '</p>' +
       '<div class="seg" role="group"' + A('aria-label', 'Порог потерь для оповещения', 'Loss that raises an alert') + '>' +
       LOSS_STEPS.map(function (v) { return '<button type="button" data-loss-alert="' + v + '" aria-pressed="' + (v === curLossStep()) + '">' + T(v + ' %', v + '%') + '</button>'; }).join('') + '</div>' +
+      '<p class="wth-hint">' + T('Сообщать о новых версиях (раз в день запрос к GitHub)', 'Tell about new versions (a request to GitHub once a day)') + '</p>' +
+      onOff('data-update-set', s.updateCheck === true, 'Сообщать о новых версиях', 'Tell about new versions') +
       '<p class="wth-hint">' + T('Оповещение приходит, когда цель не отвечает дольше минуты или потери до нее за 2 минуты выше порога. Роутеры по пути оповещений не вызывают.',
         'An alert comes when a target does not answer for over a minute, or the loss to it over 2 minutes is above the threshold. Routers on the way raise none.') + '</p></div>';
   }
@@ -267,6 +269,7 @@
     markPressed('data-autostart-set', s.autostart ? 'on' : 'off');
     markPressed('data-alerts-set', s.alerts === false ? 'off' : 'on');
     markPressed('data-loss-alert', String(curLossStep()));
+    markPressed('data-update-set', s.updateCheck === true ? 'on' : 'off');
   }
   // A change the core turns down (the system did not take the autostart entry) puts the marks back.
   function saveOrRevert(patch) { saveSettings(patch).then(function (s) { if (!s) syncBackground(); }); }
@@ -778,6 +781,10 @@
       var al = b.dataset.alertsSet === 'on';
       markPressed('data-alerts-set', al ? 'on' : 'off');
       if (al !== (settings().alerts !== false)) saveOrRevert({ alerts: al });
+    } else if ((b = t.closest('[data-update-set]'))) {
+      var up = b.dataset.updateSet === 'on';
+      markPressed('data-update-set', up ? 'on' : 'off');
+      if (up !== (settings().updateCheck === true)) saveOrRevert({ updateCheck: up });
     } else if ((b = t.closest('[data-loss-alert]'))) {
       var lp = +b.dataset.lossAlert;
       markPressed('data-loss-alert', String(lp));
@@ -851,6 +858,14 @@
       else done = false;
       if (done) { e.preventDefault(); e.stopPropagation(); }
       return;
+    }
+    // Shortcuts, by key position so they work in any layout: Ctrl+N the add field, Ctrl+1...6 the windows,
+    // Ctrl+, the settings.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && !e.isComposing) {
+      var dg = /^Digit([1-6])$/.exec(e.code || ''), inp;
+      if (e.code === 'KeyN' && (inp = $('.wth-input'))) { e.preventDefault(); inp.focus(); inp.select(); return; }
+      if (dg && WT.windows[+dg[1] - 1] && $('.wth-window')) { e.preventDefault(); pickWindow(WT.windows[+dg[1] - 1][0]); return; }
+      if (e.code === 'Comma' && panel()) { e.preventDefault(); openSettings(); return; }
     }
     if (!t.classList || e.isComposing) return;
     if (t.classList.contains('wth-input')) {

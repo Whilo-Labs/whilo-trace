@@ -241,6 +241,18 @@
   scrollEl.addEventListener('scroll', fixAxis, { passive: true });
   window.addEventListener('resize', fixAxis);
   if (window.ResizeObserver) { var ro = new ResizeObserver(function () { fixAxis(); }); [scrollEl, sumEl, stackEl].forEach(function (el) { ro.observe(el); }); }
+  // The new-version line of the status bar: the answer to the question, or the release page.
+  app.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('.wts [data-act^="upd-"]');
+    if (!b) return;
+    var act = b.dataset.act;
+    if (act === 'upd-open') { API.call('open_releases', {}).catch(function (err) { console.error('open_releases failed', err); }); return; }
+    var on = act === 'upd-yes';
+    API.call('set_settings', { settings: { updateCheck: on } }).then(function (s) {
+      WT.settings = Object.assign({}, WT.settings, s || { updateCheck: on });
+      safe(renderStatus);
+    }, function (err) { console.error('set_settings failed', err); });
+  });
   // A double click on a timeline label opens the trace, as a double click on a summary row.
   app.addEventListener('dblclick', function (e) {
     var lab = e.target.closest('#stack .tl-side, #stack .tl-head');
@@ -361,6 +373,17 @@
     var shown = L(n.ru, n.en);
     return '<span class="wts-item scr-note" role="status" title="' + esc(shown) + '" data-en="' + esc(n.en) + '">' + esc(shown) + '</span>';
   }
+  // A newer version is out (the daily check the user agreed to), or the question whether to check at all.
+  function updHtml() {
+    var s = WT.settings || {};
+    var btn = function (act, ru, en) { return '<button type="button" class="wts-link" data-act="' + act + '">' + T(ru, en) + '</button>'; };
+    if (WT.update) return '<span class="wts-item scr-upd">' + T('Вышла версия ' + WT.update, 'Version ' + WT.update + ' is out') + ' ' + btn('upd-open', 'Открыть', 'Open') + '</span>';
+    if (s.updateCheck == null) {
+      return '<span class="wts-item scr-upd">' + T('Сообщать о новых версиях? Раз в день программа спросит GitHub.', 'Tell you about new versions? Once a day the app asks GitHub.') +
+        ' ' + btn('upd-yes', 'Да', 'Yes') + ' ' + btn('upd-no', 'Нет', 'No') + '</span>';
+    }
+    return '';
+  }
   function statusHtml() {
     var c = counts(), by = {}, order = [];
     ITEMS.forEach(function (it) {
@@ -385,7 +408,7 @@
       T('потолок ' + cap + ' ' + plural(cap, 'пакет', 'пакета', 'пакетов') + '/с: часть раундов пропущена', 'ceiling ' + cap + ' packets/s: some rounds skipped') +
       '<span class="wth-tip to-right up" role="tooltip">' + T('За последнюю минуту не отправлено ' + skipped + ' ' + plural(skipped, 'раунд', 'раунда', 'раундов') + ', чтобы не перегрузить сеть. На графиках это пропуски, а не потери. Потолок меняется в настройках.',
         'In the last minute ' + skipped + (skipped === 1 ? ' round was' : ' rounds were') + ' not sent so as not to flood the network. They are gaps on the charts, not loss. The ceiling is in the settings.') + '</span></span>' : '';
-    return '<footer class="wts"><span class="wts-item num">' + left + '</span>' + noteHtml() + probes + capped +
+    return '<footer class="wts"><span class="wts-item num">' + left + '</span>' + noteHtml() + updHtml() + probes + capped +
       '<span class="wts-item wts-right num has-tip" tabindex="0">' + T(ppsRu, ppsEn) +
       '<span class="wth-tip to-right up" role="tooltip">' + T('Сколько пакетов в секунду ушло от всех целей за последние 10 секунд: по пакету на хоп за раунд. Цель, которая не отвечает, шлет пробы чуть дальше последнего ответившего узла и раз в минуту на всю глубину. Все цели вместе не шлют больше ' + (cap || 50) + ' пакетов в секунду, это меняется в настройках.',
         'Packets per second sent by all targets over the last 10 seconds: one packet per hop per round. A target that does not answer probes a little past the last node that answered, and the full depth once a minute. All targets together send at most ' + (cap || 50) + ' packets a second; the settings change that.') + '</span></span></footer>';

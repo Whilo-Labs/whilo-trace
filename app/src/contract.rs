@@ -63,6 +63,8 @@ pub struct Snapshot {
     pub rounds_skipped: u32,
     /// Size of the history file on disk, bytes.
     pub history_bytes: u64,
+    /// A newer version of Whilo Trace that is out ("0.5.0"); null when none is known.
+    pub update: Option<String>,
     pub recent: Vec<String>,
     /// The database of places for the map.
     pub geo: GeoStatus,
@@ -266,6 +268,9 @@ pub struct Settings {
     /// Loss to a target that raises an alert, %: 5, 10 or 20.
     #[serde(default = "default_alert_loss_pct")]
     pub alert_loss_pct: u32,
+    /// Look for a newer Whilo Trace once a day; null: the user has not been asked yet.
+    #[serde(default)]
+    pub update_check: Option<bool>,
 }
 
 fn default_alert_loss_pct() -> u32 {
@@ -296,6 +301,7 @@ impl Default for Settings {
             autostart: false,
             alerts: true,
             alert_loss_pct: default_alert_loss_pct(),
+            update_check: None,
         }
     }
 }
@@ -326,6 +332,7 @@ pub struct SettingsPatch {
     pub autostart: Option<bool>,
     pub alerts: Option<bool>,
     pub alert_loss_pct: Option<u32>,
+    pub update_check: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

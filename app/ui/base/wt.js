@@ -206,6 +206,7 @@
     WT.rateCap = s.rateCap || 0;
     WT.roundsSkipped = s.roundsSkipped || 0;
     WT.historyBytes = s.historyBytes || 0;
+    WT.update = s.update || null;
     WT.recent = s.recent || [];
     // Places database of the route map (state, month, source, download); the trace carries home and hops[].geo.
     WT.geo = s.geo || null;
@@ -218,7 +219,7 @@
     nowMs: 0, fromMs: 0, toMs: 0, live: true, bucketMs: 5000, ratePps: 0, rateCap: 50, roundsSkipped: 0, historyBytes: 0,
     recent: [], geo: null,
     settings: { warnMs: 100, badMs: 200, theme: 'system', lang: 'ru', window: '10m', geoCheck: true, home: null, probeCap: 50, keepDays: 30,
-      closeToTray: true, autostart: false, alerts: true, alertLossPct: 10 },
+      closeToTray: true, autostart: false, alerts: true, alertLossPct: 10, updateCheck: null },
     probesAvailable: ['icmp'],
     sharedOrigins: sharedOrigins, sharedText: sharedText, pathNow: pathNow,
     path: { line: line, bars: bars, zone: zone, jitter: jitter, hatch: hatch },

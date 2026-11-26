@@ -5,7 +5,9 @@
 
 mod alerts;
 mod contract;
+mod errlog;
 mod geo;
+mod newver;
 mod tray;
 
 use contract::{
@@ -205,6 +207,8 @@ struct Core {
     budget: Arc<ProbeBudget>,
     /// The window went to the notification area once already, and the user was told.
     tray_hint: AtomicBool,
+    /// A newer version that is out, from the daily check (`settings.update_check`).
+    newer: Mutex<Option<String>>,
 }
 
 /// A poisoned lock still holds usable data: a panic in one command must not stop the others.
@@ -362,6 +366,7 @@ impl Core {
             geo,
             budget,
             tray_hint: AtomicBool::new(tray_hint),
+            newer: Mutex::new(None),
         }))
     }
 
@@ -370,7 +375,7 @@ impl Core {
         let rows = lock(&self.store).targets().map_err(db)?;
         for t in rows.iter().filter(|t| t.active) {
             if let Err(e) = self.start(t) {
-                eprintln!("cannot start {}: {e}", t.host);
+                errlog::log(&format!("cannot start {}: {e}", t.host));
             }
         }
         Ok(())
@@ -1034,6 +1039,7 @@ impl Core {
             rate_cap: self.budget.per_s(),
             rounds_skipped: self.budget.skipped_recently(),
             history_bytes: whilo_trace_store::history_bytes(&self.db_path),
+            update: lock(&self.newer).clone(),
             recent: lock(&self.recent).clone(),
             geo,
         })
@@ -1253,7 +1259,7 @@ impl Core {
                     let due = last.is_none_or(|(d, at)| d != days || at.elapsed() >= PRUNE_EVERY);
                     if due {
                         if let Err(e) = core.prune_history() {
-                            eprintln!("history clean-up: {e}");
+                            errlog::log(&format!("history clean-up: {e}"));
                         }
                         last = Some((days, std::time::Instant::now()));
                     }
@@ -1385,6 +1391,10 @@ fn apply_settings(s: &mut Settings, p: &SettingsPatch) -> Vec<(&'static str, Str
         s.alert_loss_pct = v;
         changed.push(("alertLossPct", v.to_string()));
     }
+    if let Some(v) = p.update_check {
+        s.update_check = Some(v);
+        changed.push(("updateCheck", v.to_string()));
+    }
     geo::apply_settings(s, p, &mut changed);
     changed
 }
@@ -1405,6 +1415,7 @@ fn load_settings(saved: &[(String, String)]) -> Settings {
             "closeToTray" => p.close_to_tray = v.as_bool(),
             "alerts" => p.alerts = v.as_bool(),
             "alertLossPct" => p.alert_loss_pct = v.as_u64().and_then(|x| u32::try_from(x).ok()),
+            "updateCheck" => p.update_check = v.as_bool(),
             _ => geo::load_setting(&mut p, key, &v),
         }
     }
@@ -1876,6 +1887,56 @@ fn change_out(c: &RouteChange) -> RouteChangeOut {
     }
 }
 
+/// How often the core looks whether a day has passed since the last check for a newer version.
+const RELEASE_LOOK: Duration = Duration::from_secs(3600);
+
+/// Looks for a newer Whilo Trace once a day, while the user said yes to it; never on the
+/// simulated network. The day of the check is kept before it goes out: answered or not, the
+/// next one is tomorrow.
+fn watch_releases(core: Arc<Core>) {
+    let _ = std::thread::Builder::new()
+        .name("releases".into())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_secs(60));
+            loop {
+                let on = lock(&core.settings).update_check == Some(true);
+                let today = (now_ms() / DAY_MS).to_string();
+                let last = lock(&core.store)
+                    .settings()
+                    .ok()
+                    .and_then(|all| all.into_iter().find(|(k, _)| k == "updateDay"))
+                    .map(|(_, v)| v);
+                if on && last.as_deref() != Some(today.as_str()) {
+                    let _ = lock(&core.store).set_setting("updateDay", &today);
+                    let updater = whilo_trace_geo::update::Updater::with_base(newver::LATEST_API);
+                    match updater.fetch_text("latest", 256 * 1024) {
+                        Ok(json) => {
+                            *lock(&core.newer) = newver::newer_in(&json, env!("CARGO_PKG_VERSION"));
+                        }
+                        Err(e) => errlog::log(&format!("release check: {e}")),
+                    }
+                }
+                std::thread::sleep(RELEASE_LOOK);
+            }
+        });
+}
+
+/// Opens the page of the latest release in the browser.
+#[tauri::command]
+fn open_releases() -> Result<(), String> {
+    #[cfg(windows)]
+    let cmd = "explorer";
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let cmd = "xdg-open";
+    std::process::Command::new(cmd)
+        .arg(newver::RELEASES_PAGE)
+        .spawn()
+        .map(|_| ())
+        .map_err(io)
+}
+
 /// How often the alerts look at the rounds.
 const ALERT_EVERY: Duration = Duration::from_secs(5);
 
@@ -1993,6 +2054,13 @@ fn watch_alerts(app: AppHandle, core: Arc<Core>, simulated: bool) {
 
 fn main() {
     let simulate = simulate_value(std::env::var_os("WHILO_TRACE_SIMULATE").as_deref());
+    // A portable copy keeps the browser data of its window next to it too.
+    if let Some(dir) = whilo_trace_store::portable_dir() {
+        if std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").is_none() {
+            std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", dir.join("webview"));
+        }
+    }
+    errlog::init(whilo_trace_store::data_dir());
     // Started by the system at sign-in (autostart): straight to the notification area.
     let minimized = std::env::args().any(|a| a == "--minimized");
     let mut builder = tauri::Builder::default();
@@ -2076,6 +2144,9 @@ fn main() {
             };
             tray::build(app, &lang)?;
             watch_alerts(app.handle().clone(), core.clone(), simulate);
+            if !simulate {
+                watch_releases(core.clone());
+            }
             if let Some(window) = app.get_webview_window("main") {
                 // The window starts hidden (tauri.conf.json): shown here unless the system
                 // started the app at sign-in.
@@ -2122,6 +2193,7 @@ fn main() {
             set_background,
             clear_history,
             show_window,
+            open_releases,
             geo::geo_check,
             geo::geo_download,
             geo::geo_cancel,
