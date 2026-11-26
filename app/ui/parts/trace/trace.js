@@ -877,6 +877,45 @@
   // onPause(paused), onProbe(rowId), onPin(ttl, pinnedRowId | null), onRange([fromMs, toMs) | null), onSelect(ttl).
   // Hop card: view ('table' | 'map'), animPaused, picture (the map can save a picture); callbacks onView(view),
   // onAnim(paused), onFull(on), onPicture(), and onRender() after every redraw (the screen puts the map in its host).
+  // «Before and after»: this window (or the picked period) against the same time a day or a week before it. The
+  // history keeps every round, so any two periods compare (compare_periods).
+  function compareCard(m, st) {
+    if (m.kind !== 'trace') return '';
+    var c = st.cmp, btn = function (act, ru, en) { return '<button type="button" class="btn btn-sm" data-act="' + act + '">' + S(ru, en) + '</button>'; };
+    var h = '<section class="card tr-cmp" aria-label="' + esc(L('Сравнение', 'Comparison')) + '">';
+    if (!c) {
+      return h + '<p class="tr-cmp-ask">' + S('Сравнить с тем же временем:', 'Compare with the same time:') + ' ' +
+        btn('cmp-day', 'сутки назад', 'a day before') + ' ' + btn('cmp-week', 'неделю назад', 'a week before') + '</p></section>';
+    }
+    h += '<div class="tr-cmp-head"><strong>' + S(c.ru, c.en) + '</strong>' + btn('cmp-close', 'Закрыть', 'Close') + '</div>';
+    if (c.loading) return h + '<p class="tr-cmp-wait">' + S('Считаю…', 'Working…') + '</p></section>';
+    if (c.err) return h + '<p>' + esc(errText(c.err)) + '</p></section>';
+    var r = c.res, num = function (v, unit) {
+      if (v == null || !isFinite(v)) return { ru: 'нет данных', en: 'no data' };
+      return unit === '%' ? pr(v) : { ru: nf(v, 'ru') + ' мс', en: nf(v, 'en') + ' ms' };
+    };
+    var pair = function (a, b, unit) { var x = num(a, unit), y = num(b, unit); return { ru: x.ru + ' → ' + y.ru, en: x.en + ' → ' + y.en }; };
+    if (!r.before.rounds || !r.after.rounds) {
+      return h + '<p>' + S('В одном из периодов нет раундов: сравнивать не с чем.', 'One of the periods has no rounds: nothing to compare.') + '</p></section>';
+    }
+    var lp = pair(r.before.lossPct, r.after.lossPct, '%'), ap = pair(r.before.avgMs, r.after.avgMs, 'ms');
+    h += '<p>' + S('До цели: потери ' + lp.ru + ', средняя задержка ' + ap.ru + '.', 'To the destination: loss ' + lp.en + ', average round trip ' + ap.en + '.') + '</p>';
+    var items = r.hops.filter(function (x) { return x.verdict !== 'same'; }).map(function (x) {
+      var who = function (a) { return a ? ' (' + a + ')' : ''; }, t;
+      if (x.verdict === 'rerouted') t = { ru: 'хоп ' + x.ttl + ': другой роутер, ' + x.addrA + ' → ' + x.addrB, en: 'hop ' + x.ttl + ': another router, ' + x.addrA + ' → ' + x.addrB };
+      else if (x.verdict === 'new') t = { ru: 'хоп ' + x.ttl + ': новый роутер' + who(x.addrB), en: 'hop ' + x.ttl + ': a new router' + who(x.addrB) };
+      else if (x.verdict === 'gone') t = { ru: 'хоп ' + x.ttl + ': роутера больше нет' + who(x.addrA), en: 'hop ' + x.ttl + ': the router is gone' + who(x.addrA) };
+      else {
+        var l = pair(x.lossA, x.lossB, '%'), a = pair(x.avgA, x.avgB, 'ms'), w = x.verdict === 'worse';
+        t = { ru: (x.dest ? 'цель' : 'хоп ' + x.ttl + who(x.addrB || x.addrA)) + ': ' + (w ? 'хуже' : 'лучше') + ', потери ' + l.ru + ', задержка ' + a.ru,
+          en: (x.dest ? 'the destination' : 'hop ' + x.ttl + who(x.addrB || x.addrA)) + ': ' + (w ? 'worse' : 'better') + ', loss ' + l.en + ', round trip ' + a.en };
+      }
+      return '<li>' + mk(x.verdict === 'worse' ? 'loss' : x.verdict === 'better' ? 'ok' : 'route') + S(t.ru, t.en) + '</li>';
+    });
+    h += items.length ? '<ul>' + items.join('') + '</ul>' : '<p>' + S('По хопам без заметных изменений.', 'No notable change at the hops.') + '</p>';
+    return h + '</section>';
+  }
+
   function mount(el, o) {
     ensureDefs();
     o = o || {};
@@ -895,7 +934,7 @@
       m.h = hopOf(m, m.selected) || m.dest || m.hops[m.hops.length - 1];
       // In full screen the rest of the screen lies under the card: inert, so Tab and a screen reader stay on the card.
       var off = st.view === 'map' && st.full ? function (s) { return s.replace(/^<(\w+)/, '<$1 inert'); } : function (s) { return s; };
-      return off(header(m, st)) + '<div class="tr-main">' + off(conclusions(m, note)) + hopCard(m, st) + off(timeline(m.h, m)) + '</div>';
+      return off(header(m, st)) + '<div class="tr-main">' + off(conclusions(m, note)) + off(compareCard(m, st)) + hopCard(m, st) + off(timeline(m.h, m)) + '</div>';
     }
     function render(focusRow) {
       var t = st.id ? byId(st.id) : null;
@@ -927,6 +966,23 @@
       emit('onRender');
     }
     function setRange(r) { st.range = r; render(); emit('onRange', r); }
+    // The comparison of this window (or the picked period) with the same time `days` before it.
+    function compareWith(days) {
+      var now = WT.nowMs || WT.toMs, after = st.range ? st.range.slice() : [WT.fromMs, Math.min(WT.toMs, now)];
+      var before = [after[0] - days * 864e5, after[1] - days * 864e5], picked = !!st.range;
+      var lab = days === 1
+        ? { ru: (picked ? 'Выделенный период' : 'Это окно') + ' и то же время сутки назад', en: (picked ? 'The picked period' : 'This window') + ' and the same time a day before' }
+        : { ru: (picked ? 'Выделенный период' : 'Это окно') + ' и то же время неделю назад', en: (picked ? 'The picked period' : 'This window') + ' and the same time a week before' };
+      var job = st.cmp = { ru: lab.ru, en: lab.en, loading: true };
+      render();
+      API.call('compare_periods', { req: { target: st.id, before: before.map(Math.round), after: after.map(Math.round) } }).then(function (res) {
+        if (st.cmp !== job) return;
+        job.loading = false; job.res = res; render();
+      }, function (err) {
+        if (st.cmp !== job) return;
+        job.loading = false; job.err = err; render();
+      });
+    }
     function setFull(on) { st.full = on; render(); emit('onFull', on); }
 
     // ---------- hop timeline: hover hint and picking a period, as on the main screen timelines ----------
@@ -1058,6 +1114,8 @@
         else if (a === 'anim') { st.animPaused = !st.animPaused; render(); emit('onAnim', st.animPaused); }
         else if (a === 'full') setFull(!st.full);
         else if (a === 'picture') emit('onPicture');
+        else if (a === 'cmp-day' || a === 'cmp-week') compareWith(a === 'cmp-day' ? 1 : 7);
+        else if (a === 'cmp-close') { st.cmp = null; render(); }
       } else if (t.hasAttribute('data-view')) {
         var v = t.getAttribute('data-view');
         if (v !== st.view) { st.view = v; if (v !== 'map' && st.full) { st.full = false; emit('onFull', false); } render(); emit('onView', v); }

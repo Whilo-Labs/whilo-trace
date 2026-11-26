@@ -72,6 +72,12 @@
 .mk-loss { background: var(--loss); }
 .mk-partial { background: var(--partial); }
 .mk-noreply, .mk-unreachable, .mk-route { background: var(--muted); }
+.tr-cmp { font-size: 13px; }
+.tr-cmp p { margin: 0; }
+.tr-cmp ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.tr-cmp li { display: flex; align-items: center; gap: 8px; }
+.tr-cmp-ask { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); }
+.tr-cmp-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
 .mk-bg { fill: var(--well); }
 svg.mk { overflow: hidden; }
 .hatch-fill { fill: var(--silent); }

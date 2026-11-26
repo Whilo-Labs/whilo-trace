@@ -453,6 +453,16 @@
     recent_inputs: function () { return recent.slice(); },
     clear_history: function () { return null; },
     open_releases: function () { return null; },
+    compare_periods: function () {
+      return {
+        before: { rounds: 1440, lossPct: 8.2, avgMs: 52.4 }, after: { rounds: 1438, lossPct: 0.3, avgMs: 41.1 },
+        hops: [
+          { ttl: 1, addrA: '192.168.1.1', addrB: '192.168.1.1', lossA: 0, lossB: 0, avgA: 1.1, avgB: 1.0, dest: false, verdict: 'same' },
+          { ttl: 5, addrA: '203.0.113.17', addrB: '203.0.113.42', lossA: 0, lossB: 0, avgA: 18, avgB: 17, dest: false, verdict: 'rerouted' },
+          { ttl: 7, addrA: '198.51.100.9', addrB: '198.51.100.9', lossA: 8.1, lossB: 0, avgA: 44, avgB: 33, dest: false, verdict: 'better' },
+        ],
+      };
+    },
     export_report: function (a) {
       var r = a.req || {}, names = { html: 'report.html', png: 'timeline.png', csv: 'hops.csv', json: 'report.json' };
       var files = (r.formats || []).map(function (f) { return names[f]; }).filter(Boolean);

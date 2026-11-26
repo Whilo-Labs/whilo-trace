@@ -4,6 +4,7 @@
 //! the full trace of one target. Commands and their JSON: `docs/ui-contract.md`.
 
 mod alerts;
+mod compare;
 mod contract;
 mod errlog;
 mod geo;
@@ -1921,6 +1922,32 @@ fn watch_releases(core: Arc<Core>) {
         });
 }
 
+impl Core {
+    /// `compare_periods`: the target over two periods, hop by hop.
+    fn compare_periods(&self, req: &contract::CompareReq) -> Result<contract::CompareRes, String> {
+        let tid = self.target_of(&req.target)?;
+        let data = lock(&self.targets)
+            .get(&tid)
+            .map(|t| t.data.clone())
+            .ok_or_else(|| "no_such_target".to_string())?;
+        let now = now_ms();
+        let span = |r: [i64; 2]| (r[0].min(r[1]), r[0].max(r[1]).min(now));
+        let (a0, a1) = span(req.before);
+        let (b0, b1) = span(req.after);
+        let before = self.rounds_of(&data, tid, a0, a1)?;
+        let after = self.rounds_of(&data, tid, b0, b1)?;
+        Ok(compare::compare(&before, &after))
+    }
+}
+
+#[tauri::command(async)]
+fn compare_periods(
+    core: State<'_, Arc<Core>>,
+    req: contract::CompareReq,
+) -> Result<contract::CompareRes, String> {
+    core.compare_periods(&req)
+}
+
 /// Opens the page of the latest release in the browser.
 #[tauri::command]
 fn open_releases() -> Result<(), String> {
@@ -2194,6 +2221,7 @@ fn main() {
             clear_history,
             show_window,
             open_releases,
+            compare_periods,
             geo::geo_check,
             geo::geo_download,
             geo::geo_cancel,

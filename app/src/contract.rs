@@ -179,6 +179,51 @@ pub struct Trace {
     pub changes: Vec<RouteChangeOut>,
 }
 
+/// `compare_periods`: the same target over two periods.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareReq {
+    /// Row id of the target.
+    pub target: String,
+    /// `[fromMs, toMs)` of the period before and of the period after.
+    pub before: [i64; 2],
+    pub after: [i64; 2],
+}
+
+/// The destination over one period: rounds, loss (%) and average round trip (ms).
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareSide {
+    pub rounds: u32,
+    pub loss_pct: Option<f64>,
+    pub avg_ms: Option<f64>,
+}
+
+/// A hop in both periods. `verdict`: "same", "worse", "better", "rerouted" (another router
+/// answers), "new" or "gone". Loss counts only where it is real (loss on the path, or at the
+/// destination), not a router that limits its own answers.
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareHop {
+    pub ttl: u8,
+    pub addr_a: Option<String>,
+    pub addr_b: Option<String>,
+    pub loss_a: Option<f64>,
+    pub loss_b: Option<f64>,
+    pub avg_a: Option<f64>,
+    pub avg_b: Option<f64>,
+    pub dest: bool,
+    pub verdict: String,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareRes {
+    pub before: CompareSide,
+    pub after: CompareSide,
+    pub hops: Vec<CompareHop>,
+}
+
 /// A change of the route: `kind` "address" (the target's name resolves to another address),
 /// "router" (the router at `ttl` was replaced, and maybe the ones after it) or "length" (the
 /// destination answers at another TTL: `from` and `to` are TTLs then).
