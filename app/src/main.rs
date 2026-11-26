@@ -2197,11 +2197,7 @@ fn main() {
     // a history of its own, so it may run next to the real app.
     if !simulate {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            tray::show_main(app);
         }));
     }
     builder
@@ -2212,11 +2208,17 @@ fn main() {
             Some(vec!["--minimized"]),
         ))
         .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
+            // Minimized or brought back (the taskbar, Alt+Tab): the page learns whether it is seen.
+            if let tauri::WindowEvent::Resized(_) = event {
+                let hidden = window.is_minimized().unwrap_or(false)
+                    || !window.is_visible().unwrap_or(true);
+                tray::page_shown(window.app_handle(), !hidden);
+            }
             // Closing the window leaves the app in the notification area, probing.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() != "main" {
-                    return;
-                }
                 let core = window.state::<Arc<Core>>();
                 let (to_tray, lang) = {
                     let s = lock(&core.settings);
@@ -2227,6 +2229,7 @@ fn main() {
                 }
                 api.prevent_close();
                 let _ = window.hide();
+                tray::page_shown(window.app_handle(), false);
                 if core.first_hide() {
                     let (title, body) = if lang == "en" {
                         (
@@ -2281,6 +2284,7 @@ fn main() {
                 if !minimized {
                     let _ = window.show();
                 }
+                tray::page_shown(app.handle(), !minimized);
                 let (theme, lang) = {
                     let s = lock(&core.settings);
                     (s.theme.clone(), s.lang.clone())

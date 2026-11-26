@@ -9,6 +9,7 @@ The app now keeps watching with its window closed, tells you when something brea
 - **Runs in the notification area.** Closing the window leaves the app in the tray, still probing, so the history has no holes. Click the icon to open the window; its menu has Quit. The settings can make closing quit instead.
 - **Starts with the system.** Off by default. Turn it on in the settings, and the app starts in the tray when you sign in and resumes its targets.
 - **Alerts.** A notification comes when a target does not answer for over a minute, or when the loss to it over the last 2 minutes reaches 10% (5, 10 or 20% in the settings). It names the hop where the loss starts, and another one comes when it is over. Only the destination counts, so a router that limits its own answers raises nothing, and an outage gives one alert rather than a stream of them. While a target has an alert, the tray icon has a red dot.
+- **Quiet while hidden.** While the window is in the tray or minimized, the screen and the route map stop redrawing, and they catch up as soon as the window is back. Probing and alerts go on. On Windows.
 
 ### Evidence for your ISP
 

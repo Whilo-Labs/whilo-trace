@@ -1,7 +1,9 @@
 // Live: what the screen is looking at (window, live or past, selected period, traced target)
 // and the loop that keeps WT fresh. Every change asks the core for a new snapshot (API "snapshot"),
 // loads it with WT.apply and tells the screen through Live.onData. Round events refresh the data
-// at most once a second and only while the screen shows live data.
+// at most once a second and only while the screen shows live data and can be seen: a window in the
+// notification area or minimized has a hidden page (the core tells WebView2, tray.rs page_shown),
+// and it catches up as soon as it is seen again.
 // A command that changes targets or settings (add_target, set_paused, ...) refreshes the data too, so a part
 // only calls the command. One snapshot is on its way at a time: a refresh asked after a change it does not
 // cover (Live.set, a command, a round) gets one more snapshot after it, a refresh it covers gets the same one.
@@ -70,13 +72,20 @@
     return queued;
   }
 
+  var behind = false; // rounds came while the page was hidden
   function onRound() {
     gen++;
     if (state.endMs) return; // looking at the past: live rounds do not move the screen
+    if (document.hidden) { behind = true; return; }
     var wait = Math.max(0, 1000 - (Date.now() - last));
     if (timer) return;
     timer = setTimeout(function () { timer = null; refresh().catch(noop); }, wait); // a failure goes to onError
   }
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden || !behind) return;
+    behind = false;
+    refresh().catch(noop);
+  });
 
   // A command that changes something marks the data as old; one that changes what the snapshot shows refreshes it.
   var call = API.call;

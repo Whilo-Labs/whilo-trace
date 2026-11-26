@@ -225,7 +225,7 @@ One small probe per hop per round: a target 10 hops away at the default 2.5 s se
 
 <br>
 
-Yes: the window goes to the notification area and the targets are still probed, so the history has no holes. Click the icon to open the window; its menu has Quit. The settings can make closing quit instead, and can start the app with the system.
+Yes: the window goes to the notification area and the targets are still probed, so the history has no holes. Click the icon to open the window; its menu has Quit. The settings can make closing quit instead, and can start the app with the system. On Windows a hidden or minimized window does not redraw, and it catches up when it is back.
 </details>
 
 <details>

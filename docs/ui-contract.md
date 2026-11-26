@@ -64,7 +64,9 @@ system's own message, in the system's language.
 | `save_image` | `{ dir, name, pngBase64 }` | `{ path }`; the picture of the map as `<name>.png` in `dir` (`null`: Documents/Whilo Trace, as for reports). Never overwrites a file (see below); `io: ...` |
 
 Event `round`: a target finished a round, payload is its numeric target id. The interface asks for a new
-snapshot at most once a second, and only while it shows live data (`base/live.js`). On the trace screen a
+snapshot at most once a second, only while it shows live data and only while the page can be seen
+(`base/live.js`): on Windows the core hides the page of a window in the notification area or minimized
+(`tray::page_shown`), and the page asks for one snapshot as soon as it is seen again. On the trace screen a
 round of the shown target also starts the route map's packet: the first snapshot asked after the event
 (`Live.askedAt`) tells how that round ended.
 

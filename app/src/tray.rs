@@ -2,9 +2,13 @@
 //! icon opens the window; its menu opens it or quits. While a target has an alert, the icon has a
 //! red dot and its tooltip says at how many targets.
 
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+#[cfg(windows)]
+use tauri::webview::Webview;
 use tauri::{AppHandle, Manager, Runtime};
 
 const ID: &str = "main";
@@ -16,6 +20,31 @@ pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
         let _ = w.show();
         let _ = w.set_focus();
     }
+    page_shown(app, true);
+}
+
+/// Whether the page of the main window is hidden from WebView2 now.
+#[cfg(windows)]
+static PAGE_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+/// Tells the page of the main window whether it can be seen. WebView2 does not find out by itself
+/// that its window went to the notification area or was minimized (the page stays `visible`), so
+/// the screen kept asking the core for data every second and the route map kept drawing. A hidden
+/// page (`document.hidden`) asks for nothing until it is seen again, and its timers slow down; the
+/// core keeps probing and alerting. Windows only: elsewhere it was not tried in a real window.
+pub fn page_shown<R: Runtime>(app: &AppHandle<R>, shown: bool) {
+    #[cfg(windows)]
+    {
+        if PAGE_HIDDEN.swap(!shown, Ordering::SeqCst) == !shown {
+            return;
+        }
+        if let Some(w) = app.get_webview_window("main") {
+            let page: &Webview<R> = w.as_ref();
+            let _ = if shown { page.show() } else { page.hide() };
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (app, shown);
 }
 
 pub fn build<R: Runtime>(app: &tauri::App<R>, lang: &str) -> tauri::Result<()> {
