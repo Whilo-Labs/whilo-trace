@@ -52,6 +52,10 @@ jobs:
         working-directory: app
         run: npx --yes @tauri-apps/cli@2 build --bundles nsis --config tauri.geo.conf.json
       - name: Command line
+        # The C runtime linked in statically, so the exe needs no Visual C++ Redistributable
+        # (VCRUNTIME140.dll). The desktop app gets the same from Tauri, which links the VC runtime statically.
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
         run: cargo build --release -p whilo-trace-cli
       - name: Package
         shell: pwsh
