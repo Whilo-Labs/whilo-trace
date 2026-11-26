@@ -12,9 +12,9 @@
 [Download](#download) · [Features](#features) · [Screenshots](#screenshots) · [How it works](#how-it-works) · [Route map](#route-map) · [Build](#build-from-source) · [FAQ](#faq)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/main-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/main-light.png">
-  <img alt="All targets: the summary, the timelines and the day strip" src="docs/screenshots/main-dark.png">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/map-packet-dark.gif">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/map-packet-light.gif">
+  <img alt="Route map: a packet of the target's latest round runs along the path to 8.8.8.8 and the target replies; the next round is lost at hop 7, where the loss starts" src="docs/screenshots/map-packet-dark.gif">
 </picture>
 
 ## Why Whilo Trace
@@ -38,6 +38,12 @@
 ## Screenshots
 
 <picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/main-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/main-light.png">
+  <img alt="All targets: the summary, the timelines and the day strip" src="docs/screenshots/main-dark.png">
+</picture>
+
+<picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/trace-dark.png">
   <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/trace-light.png">
   <img alt="Target trace: findings, the hop table and the timeline of the hop where the loss starts" src="docs/screenshots/trace-light.png">
@@ -49,7 +55,7 @@
   <img alt="Route map: the path to 8.8.8.8 on a world map, the hop where the loss starts and the speed-of-light check" src="docs/screenshots/map-dark.png">
 </picture>
 
-<sub>The screenshots show demo data: addresses other than the public resolvers are from documentation, shared (CGNAT) and private ranges, and the router names and their places are made up.</sub>
+<sub>The animation and the screenshots show demo data: addresses other than the public resolvers are from documentation, shared (CGNAT) and private ranges, and the router names and their places are made up.</sub>
 
 ## Download
 
