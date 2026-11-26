@@ -1,17 +1,16 @@
 Whilo Trace watches the network path to several hosts at once: per-hop loss and latency in real time, a timeline from 5 minutes to 24 hours, local history and a report for your ISP.
 
-## What's new in 0.3.0
+## What's new in 0.4.0
 
-This release keeps the app from distorting what it measures.
+The app now keeps watching with its window closed and tells you when something breaks.
 
-- **A ceiling on probes.** All targets together send at most 50 packets per second (25, 50, 100 or 200 in the settings), split evenly between the targets. Too many probes can make a home router drop packets, and the app would then report loss it caused itself. Rounds over the ceiling are skipped and show as gaps, not as loss, and the status bar says when that happens.
-- **Fewer probes to silent targets.** A target that has never answered is probed a little past the last router that answered, and the full 30 hops once a minute, instead of 30 probes every round. Targets no longer start their rounds all at the same moment.
-- **The real packet rate.** The status bar shows the packets actually sent over the last 10 seconds.
-- **No network is not loss.** When the computer cannot send a probe at all (a cable out, Wi-Fi off), those rounds are no longer counted as loss from the first hop: the timeline shows a gap and the target says "no network". Rounds cut short by sleep or by a jump of the clock are dropped.
-- **History for 30 days.** Rounds older than 30 days are deleted in the background; the settings offer 7, 30, 90 or 365 days, or always. They also show the size of the history file and can clear it.
-- **Command line.** `watch` takes `--max-pps` (50 by default) for all its hosts together.
+- **Runs in the notification area.** Closing the window leaves the app in the tray, still probing, so the history has no holes. Click the icon to open the window; its menu has Quit. The settings can make closing quit instead.
+- **Starts with the system.** Off by default. Turn it on in the settings, and the app starts in the tray when you sign in and resumes its targets.
+- **Alerts.** A notification comes when a target does not answer for over a minute, or when the loss to it over the last 2 minutes reaches 10% (5, 10 or 20% in the settings). It names the hop where the loss starts, and another one comes when it is over. Only the destination counts, so a router that limits its own answers raises nothing, and an outage gives one alert rather than a stream of them. While a target has an alert, the tray icon has a red dot.
 
-**Before you update:** five minutes after the first start of 0.3.0, history older than 30 days is deleted. To keep it, open the settings right after the start and choose "always" under History.
+**Updating from 0.2.x:** five minutes after the first start, history older than 30 days is deleted (this came in 0.3.0). To keep it, open the settings right after the start and choose "always" under History.
+
+0.3.0 added a ceiling on probes for all targets together, kept rounds without a network out of the loss, and keeps the history for 30 days; see its [release notes](https://github.com/Whilo-Labs/whilo-trace/releases/tag/v0.3.0).
 
 ## Downloads
 
@@ -34,4 +33,4 @@ The app files include the places database of the route map (DB-IP Lite, about 13
 
 ## Tested
 
-Tested by the author on Windows 11. The Linux and macOS builds come from the same automated build. The engine, history, places database and command line pass the automated tests on those systems, and the app's own tests run on Windows only; neither system has been tried on a real machine yet. The probe ceiling, the "no network" handling and the history clean-up of this release were checked on the simulated network built into the app; how Windows reports probes on a computer without a network, and sleep on a laptop, have not been tried on a real machine yet. The route map has so far been checked only with made-up places, not on real traces. The in-app update of the places database has only been tested against a local test server. If something does not work, please [open an issue](https://github.com/Whilo-Labs/whilo-trace/issues/new/choose).
+Tested by the author on Windows 11. The Linux and macOS builds come from the same automated build. The engine, history, places database and command line pass the automated tests on those systems, and the app's own tests run on Windows only; neither system has been tried on a real machine yet. The tray, the start with the system and the alerts were checked on Windows with the simulated network built into the app; how the notifications look in an installed copy, and the tray on Linux and macOS, have not been tried yet. How Windows reports probes on a computer without a network, and sleep on a laptop, have not been tried on a real machine either. The route map has so far been checked only with made-up places, not on real traces. The in-app update of the places database has only been tested against a local test server. If something does not work, please [open an issue](https://github.com/Whilo-Labs/whilo-trace/issues/new/choose).
