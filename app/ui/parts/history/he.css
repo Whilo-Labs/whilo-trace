@@ -22,6 +22,9 @@
 .hx-top { display: flex; align-items: center; gap: 16px; min-height: 28px; }
 .hx-title { display: flex; align-items: baseline; gap: 8px; flex: 1 1 auto; min-width: 0; overflow: hidden; }
 .hx-name { flex: none; font-size: 13px; font-weight: 600; color: var(--title); white-space: nowrap; }
+.hx-title { align-items: center; }
+.hx-span { flex: none; padding: 2px; }
+.hx-span button { height: 22px; padding: 0 8px; }
 .hx-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
 .hx-state { display: flex; align-items: center; gap: 12px; flex: none; }
 .hx-win { font-size: 12px; color: var(--muted); white-space: nowrap; }

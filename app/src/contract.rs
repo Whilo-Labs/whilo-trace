@@ -35,6 +35,9 @@ pub struct SnapshotReq {
     pub trace: Option<String>,
     #[serde(default = "default_buckets")]
     pub buckets: u32,
+    /// Days the history strip covers: 1, 7 or 30.
+    #[serde(default)]
+    pub history_days: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]

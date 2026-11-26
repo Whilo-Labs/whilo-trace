@@ -1261,6 +1261,23 @@ fn rounds_without_a_network_are_gaps_not_loss() {
 }
 
 #[test]
+fn lost_minutes_are_distinct_and_skip_rounds_without_a_network() {
+    let mut s = memory();
+    let id = s.add_target("10.0.0.4").unwrap();
+    // A round every 30 s; lost: 30 s and 60 s (minutes 0 and 1), 180 s (minute 3).
+    for r in rounds(&["++++++++", "+..+++.+"], 30_000) {
+        s.insert_round(id, &r).unwrap();
+    }
+    // Minute 4: rounds without a network only, which are no loss.
+    s.insert_round(id, &offline_round(240_000)).unwrap();
+    s.insert_round(id, &offline_round(250_000)).unwrap();
+    assert_eq!(s.lost_minutes(id, 0, 300_000).unwrap(), vec![0, 1, 3]);
+    assert_eq!(s.lost_minutes(id, 60_000, 300_000).unwrap(), vec![1, 3]);
+    assert_eq!(s.lost_minutes(id, 0, 180_000).unwrap(), vec![0, 1]);
+    assert!(s.lost_minutes(id + 1, 0, 300_000).unwrap().is_empty());
+}
+
+#[test]
 fn old_rounds_are_pruned_with_their_hops() {
     let mut s = memory();
     let a = s.add_target("10.0.0.4").unwrap();

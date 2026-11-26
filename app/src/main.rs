@@ -210,6 +210,17 @@ struct Core {
     tray_hint: AtomicBool,
     /// A newer version that is out, from the daily check (`settings.update_check`).
     newer: Mutex<Option<String>>,
+    /// Minutes with a lost round, per target, for the week and month strips.
+    lost_minutes: Mutex<HashMap<i64, LostMinutes>>,
+}
+
+/// Minutes with a lost round of one target over `[from_ms, to_ms)`: read from disk once, then
+/// only for the minutes since.
+#[derive(Default)]
+struct LostMinutes {
+    from_ms: i64,
+    to_ms: i64,
+    minutes: Vec<i64>,
 }
 
 /// A poisoned lock still holds usable data: a panic in one command must not stop the others.
@@ -368,6 +379,7 @@ impl Core {
             budget,
             tray_hint: AtomicBool::new(tray_hint),
             newer: Mutex::new(None),
+            lost_minutes: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -913,8 +925,14 @@ impl Core {
         // Positions of every row: targets and pinned hops share one order.
         let mut order: Vec<(i64, u8, i64, Row)> = Vec::new();
         let mut trace = None;
-        let (h_from, h_to) = (f.to_ms - DAY_MS, f.to_ms);
-        let slot_ms = DAY_MS / HISTORY_SLOTS as i64;
+        // The history strip: a day, a week or a month that ends where the window ends.
+        let days = match req.history_days {
+            Some(7) => 7,
+            Some(30) => 30,
+            _ => 1,
+        };
+        let (h_from, h_to) = (f.to_ms - days * DAY_MS, f.to_ms);
+        let slot_ms = days * DAY_MS / HISTORY_SLOTS as i64;
         let mut history: BTreeSet<u32> = BTreeSet::new();
         for t in &infos {
             let mut disk_changes: Option<Vec<RouteChange>> = None;
@@ -983,8 +1001,28 @@ impl Core {
                 };
                 tr.changes = found.iter().map(change_out).collect();
             }
-            // Loss marks of the day strip.
-            if live || h_from >= d.hist.complete_from() {
+            // Loss marks of the history strip.
+            if days > 1 {
+                // A week or a month: what memory holds from its rounds, the rest by the minute
+                // from disk (cached, so only new minutes are read again).
+                let mem_from = d.hist.complete_from().clamp(h_from, h_to);
+                let recent: Vec<i64> = d.hist.lost_between(mem_from, h_to).collect();
+                drop(d);
+                if h_from < mem_from {
+                    let minutes = self.lost_minutes_in(t.id, h_from, mem_from)?;
+                    history.extend(
+                        minutes
+                            .into_iter()
+                            .map(|m| ((m * 60_000).max(h_from) - h_from) / slot_ms)
+                            .map(|k| k as u32),
+                    );
+                }
+                history.extend(
+                    recent
+                        .into_iter()
+                        .map(|ts| ((ts - h_from) / slot_ms) as u32),
+                );
+            } else if live || h_from >= d.hist.complete_from() {
                 history.extend(
                     d.hist
                         .lost_between(h_from, h_to)
@@ -1127,6 +1165,7 @@ impl Core {
             return Err("no_such_target".into());
         }
         lock(&self.pins).retain(|_, p| p.target_id != tid);
+        lock(&self.lost_minutes).remove(&tid);
         lock(&self.store).remove_target(tid).map_err(db)
     }
 
@@ -1241,6 +1280,10 @@ impl Core {
         loop {
             let n = store.prune_before(before, PRUNE_BATCH).map_err(db)?;
             if n == 0 {
+                if gone > 0 {
+                    // Loss marks of deleted rounds go too; the strips read the rest again.
+                    lock(&self.lost_minutes).clear();
+                }
                 return Ok(gone);
             }
             gone += n;
@@ -1269,9 +1312,43 @@ impl Core {
             });
     }
 
+    /// The minutes of `[from_ms, to_ms)` with a lost round of target `id`, from the cache, which
+    /// reads from disk only what it does not hold yet. The minute at its end is read again: it may
+    /// have got more rounds since. Only for times memory no longer holds (they are on disk).
+    fn lost_minutes_in(&self, id: i64, from_ms: i64, to_ms: i64) -> Result<Vec<i64>, String> {
+        let mut cache = lock(&self.lost_minutes);
+        let e = cache.entry(id).or_default();
+        let read = |a: i64, b: i64| lock(&self.reader).lost_minutes(id, a, b).map_err(db);
+        if e.to_ms <= e.from_ms {
+            e.minutes = read(from_ms, to_ms)?;
+            e.from_ms = from_ms;
+            e.to_ms = to_ms;
+        } else {
+            if from_ms < e.from_ms {
+                let mut head = read(from_ms, e.from_ms)?;
+                head.append(&mut e.minutes);
+                e.minutes = head;
+                e.from_ms = from_ms;
+            }
+            if to_ms > e.to_ms {
+                let start = e.to_ms - e.to_ms.rem_euclid(60_000);
+                e.minutes.retain(|&m| m * 60_000 < start);
+                let mut tail = read(start, to_ms)?;
+                e.minutes.append(&mut tail);
+                e.to_ms = to_ms;
+            }
+        }
+        Ok(e.minutes
+            .iter()
+            .copied()
+            .filter(|&m| m * 60_000 + 60_000 > from_ms && m * 60_000 < to_ms)
+            .collect())
+    }
+
     /// Deletes the whole history of every target; targets, pinned hops and settings stay.
     fn clear_history(&self) -> Result<(), String> {
         lock(&self.store).clear_history().map_err(db)?;
+        lock(&self.lost_minutes).clear();
         let now = now_ms();
         let ids: Vec<i64> = {
             let targets = lock(&self.targets);
@@ -2429,6 +2506,7 @@ mod tests {
             range: None,
             trace: None,
             buckets: 120,
+            history_days: None,
         }
     }
 
@@ -2793,6 +2871,23 @@ mod tests {
         let again = core.snapshot(&req("1h", Some(end))).unwrap();
         assert_eq!(again.targets[0].series, past.targets[0].series);
 
+        // A week and a month: the loss two days ago by the minute from disk, the recent loss from
+        // memory; the second look comes from the cache.
+        for (days, old) in [(7i64, 142u32..=144), (30, 185..=187)] {
+            let mut r = req("10m", None);
+            r.history_days = Some(days as u32);
+            let s = core.snapshot(&r).unwrap();
+            let h = &s.history;
+            assert_eq!(h.to_ms - h.from_ms, days * DAY_MS);
+            assert!(
+                h.loss.iter().any(|k| old.contains(k)),
+                "{days}: {:?}",
+                h.loss
+            );
+            assert!(h.loss.contains(&199), "{days}: {:?}", h.loss);
+            assert_eq!(core.snapshot(&r).unwrap().history.loss, h.loss);
+        }
+
         // A report of two targets and a pinned hop.
         let report_req = || ReportReq {
             rows: vec!["t1".into(), "p1".into(), "t2".into()],
@@ -2887,6 +2982,7 @@ mod tests {
                 range: Some(range),
                 trace: None,
                 buckets: 120,
+                history_days: None,
             };
             Frame::new(&req, 1_600_002)
         };

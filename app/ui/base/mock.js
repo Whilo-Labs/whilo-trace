@@ -375,7 +375,7 @@
       // The core sends the trace only for req.trace. The mockups also read it on the main screen,
       // so the mock keeps it there unless ?mock=strict (strict is how the app behaves).
       trace: req.trace ? traceFor(req.trace) : (FLAGS.indexOf('strict') >= 0 ? null : copy(TRACE)),
-      history: { fromMs: to - 86400000, toMs: to, slots: 200, loss: HISTORY.slice() },
+      history: { fromMs: to - 86400000 * ([7, 30].indexOf(req.historyDays) >= 0 ? req.historyDays : 1), toMs: to, slots: 200, loss: HISTORY.slice() },
       loss: LOSS.slice(), ticks: TICKS, settings: copy(settings), probesAvailable: ['icmp'],
       ratePps: rows.filter(function (r) { return !r.paused; }).length ? 18 : 0, rateCap: settings.probeCap, roundsSkipped: 0,
       historyBytes: 37748736, update: null, recent: recent.slice(),

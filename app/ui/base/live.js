@@ -23,7 +23,7 @@
   if (!WT.ticks || !WT.ticks['10m']) WT.ticks = WT.ticksAt(Date.now());
 
   function request() {
-    return { window: state.window, endMs: state.endMs, range: state.range, trace: state.trace, buckets: state.buckets };
+    return { window: state.window, endMs: state.endMs, range: state.range, trace: state.trace, buckets: state.buckets, historyDays: WT.historyDays || 1 };
   }
   function emit() { subs.forEach(function (cb) { try { cb(WT); } catch (e) { console.error(e); } }); }
 

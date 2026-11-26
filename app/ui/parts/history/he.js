@@ -145,7 +145,31 @@
     noreply: svg('0 0 16 16', '<circle cx="8" cy="8" r="5.5"/><path d="M4.1 11.9l7.8-7.8"/>'),
   };
 
-  /* ---------- loss marks of the day strip ---------- */
+  /* ---------- loss marks of the history strip ---------- */
+  // The strip covers a day, a week or a month (SPAN); the core sends its loss marks (Snapshot.history,
+  // req.historyDays). A week and a month mark the minutes with loss; the window on screen stays at most a day.
+  // The app keeps the choice between starts (localStorage); a plain browser per tab, like the theme.
+  var SPAN = DAY, spanStore = null;
+  try { spanStore = window.__TAURI__ ? window.localStorage : window.sessionStorage; } catch (e) { /* no storage */ }
+  try { var savedSpan = spanStore ? +spanStore.getItem('wt-history-days') : 1; if (savedSpan === 7 || savedSpan === 30) SPAN = savedSpan * DAY; } catch (e) { /* no storage */ }
+  WT.historyDays = SPAN / DAY;
+  function setSpan(days) {
+    if (!(days === 1 || days === 7 || days === 30) || SPAN === days * DAY) return;
+    SPAN = days * DAY;
+    WT.historyDays = days;
+    try { if (spanStore) spanStore.setItem('wt-history-days', String(days)); } catch (e) { /* no storage */ }
+    STRIPS.forEach(function (s) { if (s.el.isConnected && s.el._he === s) s.respan(); });
+    // Live.set marks the data as old: a snapshot on its way asked for the old span.
+    if (window.Live && window.Live.set) window.Live.set({}).catch(function () { /* the next snapshot brings it */ });
+  }
+  function spanName() {
+    return SPAN === DAY ? ['История за сутки', 'Last 24 hours'] : SPAN === 7 * DAY ? ['История за неделю', 'Last 7 days'] : ['История за месяц', 'Last 30 days'];
+  }
+  function spanSeg() {
+    return '<span class="seg hx-span" role="group">' + [[1, 'сутки', 'day'], [7, 'неделя', 'week'], [30, 'месяц', 'month']].map(function (d) {
+      return '<button type="button" class="hx-span-btn" data-days="' + d[0] + '" aria-pressed="' + (SPAN === d[0] * DAY) + '">' + L(d[1], d[2]) + '</button>';
+    }).join('') + '</span>';
+  }
   // The core sends 24 hours of loss marks that end where the window ends (WT.history). The strip can show
   // another day than the last snapshot, so every piece received is kept by time and the strip takes the piece
   // that covers it best. Loss in the window on screen comes from the rows' buckets, which are finer.
@@ -169,6 +193,8 @@
   function marksFor(a, b, extra) {
     var best = null, bo = 0, list = [], out = [];
     for (var i = PIECES.length - 1; i >= 0; i--) {
+      // Only pieces as long as the strip: a day's marks are finer than a month's.
+      if (Math.abs((PIECES[i].to - PIECES[i].from) - SPAN) > MIN) continue;
       var p = PIECES[i], ov = Math.min(b, p.to) - Math.max(a, p.from);
       if (ov > bo + 1000) { best = p; bo = ov; }
     }
@@ -179,7 +205,7 @@
       var last = out[out.length - 1];
       if (last && m[0] <= last[1]) last[1] = Math.max(last[1], m[1]); else out.push(m.slice());
     });
-    return { marks: out, covered: bo >= (b - a) - 2 * DAY / SLOTS };
+    return { marks: out, covered: bo >= (b - a) - 2 * SPAN / SLOTS };
   }
   // History of a day the strip shows but no snapshot covered yet: a small snapshot just for its history.
   var FETCHING = {};
@@ -188,10 +214,10 @@
     if (FETCHING[k] || !window.API) return;
     FETCHING[k] = true;
     var free = function () { setTimeout(function () { delete FETCHING[k]; }, live ? 60000 : 10000); };
-    window.API.call('snapshot', { req: { window: WT.windows[0][0], endMs: live ? null : Math.round(end), range: null, trace: null, buckets: 10 } })
+    window.API.call('snapshot', { req: { window: WT.windows[0][0], endMs: live ? null : Math.round(end), range: null, trace: null, buckets: 10, historyDays: SPAN / DAY } })
       .then(function (s) { addPiece(s && s.history); free(); if (done) done(); }, free);
   }
-  function pctOf(len) { return (len / DAY * 100) + '%'; }
+  function pctOf(len) { return (len / SPAN * 100) + '%'; }
   function markHtml(list, a) {
     return list.map(function (m) { return '<i class="hx-mark" style="left:' + pctOf(m[0] - a) + ';width:' + pctOf(m[1] - m[0]) + '"></i>'; }).join('');
   }
@@ -203,10 +229,11 @@
 
   /* ---------- day strip ---------- */
   var STRIPS = [], LOCAL = null;
-  function livePage() { var n = nowMs(); return { a: n - DAY, b: n, live: true }; }
+  function livePage() { var n = nowMs(); return { a: n - SPAN, b: n, live: true }; }
   function stripHtml(empty) {
-    var pg = livePage(), tk = tickLabels([0, 1, 2, 3, 4, 5].map(function (k) { return pg.a + DAY * k / 5; }));
-    var back = pick('На сутки раньше', 'One day back'), fwd = pick('На сутки позже', 'One day forward');
+    var pg = livePage(), tk = tickLabels([0, 1, 2, 3, 4, 5].map(function (k) { return pg.a + SPAN * k / 5; }));
+    var back = pick(SPAN === DAY ? 'На сутки раньше' : SPAN === 7 * DAY ? 'На неделю раньше' : 'На месяц раньше', SPAN === DAY ? 'One day back' : SPAN === 7 * DAY ? 'One week back' : 'One month back');
+    var fwd = pick(SPAN === DAY ? 'На сутки позже' : SPAN === 7 * DAY ? 'На неделю позже' : 'На месяц позже', SPAN === DAY ? 'One day forward' : SPAN === 7 * DAY ? 'One week forward' : 'One month forward');
     var nav = '<div class="hx-nav">' +
       '<button type="button" class="btn btn-sm btn-icon hx-prev" title="' + esc(back) + '" aria-label="' + esc(back) + '"' + (empty ? ' disabled' : '') + '>' + I.prev + '</button>' +
       '<button type="button" class="btn btn-sm btn-icon hx-next" disabled title="' + esc(fwd) + '" aria-label="' + esc(fwd) + '">' + I.next + '</button></div>';
@@ -221,8 +248,9 @@
       '<div class="hx-state"><span class="hx-win"></span><span class="hx-range num"></span>' +
       '<span class="hx-live"><i class="dot" aria-hidden="true"></i>' + L('сейчас', 'live') + '</span>' +
       '<button type="button" class="btn btn-sm hx-now">' + I.toNow + L('К текущему моменту', 'Back to now') + '</button></div>';
-    return '<section class="hx' + (empty ? ' is-empty' : '') + '" data-mode="live" aria-label="' + esc(pick('История за сутки', 'Last 24 hours')) + '">' +
-      '<div class="hx-top"><div class="hx-title">' + L('История за сутки', 'Last 24 hours', 'hx-name') +
+    var nm = spanName();
+    return '<section class="hx' + (empty ? ' is-empty' : '') + '" data-mode="live" aria-label="' + esc(pick(nm[0], nm[1])) + '">' +
+      '<div class="hx-top"><div class="hx-title">' + L(nm[0], nm[1], 'hx-name') + spanSeg() +
       (empty ? L('пока пусто', 'empty so far', 'hx-sub') : L('отметки потерь всех целей · щелкните по полосе или перетащите рамку', 'loss marks of all targets · click the strip or drag the frame', 'hx-sub')) + '</div>' +
       state + '</div>' +
       '<div class="hx-body">' + nav + lane + '<span></span><div class="hx-ticks">' + ticks + '<span class="hx-read" hidden></span></div></div></section>';
@@ -251,7 +279,7 @@
   function history(el, o) {
     if (el._he && el._he.kind === 'history') { if (o) el._he.o = o; el._he.update(); return el._he; }
     var st = { pageEnd: null, hover: null, drag: null, local: null, want: null, keyT: 0, empty: null, pg: null, marks: [] };
-    var ctl = { kind: 'history', el: el, st: st, o: o || {}, update: update, render: render, toNow: toNow };
+    var ctl = { kind: 'history', el: el, st: st, o: o || {}, update: update, render: render, toNow: toNow, respan: respan };
     el._he = ctl;
     STRIPS.push(ctl);
 
@@ -277,9 +305,9 @@
     function page(fr) {
       var now = nowMs(), b = st.pageEnd == null ? now : st.pageEnd;
       if (fr.b > b) b = fr.b;
-      if (fr.a < b - DAY) b = fr.a + DAY;
+      if (fr.a < b - SPAN) b = fr.a + SPAN;
       var live = b >= now - 1000;
-      return { a: (live ? now : b) - DAY, b: live ? now : b, live: live };
+      return { a: (live ? now : b) - SPAN, b: live ? now : b, live: live };
     }
     function isLive(fr, pg) { return st.local != null ? pg.live && fr.b >= pg.b - 1000 : !!WT.live; }
     function satisfied() {
@@ -295,7 +323,7 @@
       render();
     }
     function setTicks(h, pg) {
-      var tk = tickLabels([0, 1, 2, 3, 4, 5].map(function (k) { return pg.a + DAY * k / 5; })), list = h.querySelectorAll('.hx-tk');
+      var tk = tickLabels([0, 1, 2, 3, 4, 5].map(function (k) { return pg.a + SPAN * k / 5; })), list = h.querySelectorAll('.hx-tk');
       for (var i = 0; i < list.length; i++) setText(list[i], tk[i][0], tk[i][1]);
     }
     function render() {
@@ -307,14 +335,14 @@
       st.pg = pg;
       h.dataset.mode = live ? 'live' : 'past';
       var lane = h.querySelector('.hx-lane'), sel = h.querySelector('.hx-sel'), fe = h.querySelector('.hx-frame');
-      var l = clamp((fr.a - pg.a) / DAY * 100, 0, 100), r = clamp((fr.b - pg.a) / DAY * 100, 0, 100);
+      var l = clamp((fr.a - pg.a) / SPAN * 100, 0, 100), r = clamp((fr.b - pg.a) / SPAN * 100, 0, 100);
       sel.style.left = fe.style.left = l + '%';
       sel.style.width = fe.style.width = (r - l) + '%';
       fe.classList.toggle('narrow', lane.clientWidth * (r - l) / 100 < 14);
       setText(h.querySelector('.hx-win'), 'окно ' + winName(fr.W, false), winName(fr.W, true) + ' window');
       setText(h.querySelector('.hx-range'), span(fr.a, fr.b, !live, false), span(fr.a, fr.b, !live, true));
       lane.setAttribute('aria-valuemin', String(Math.round(fr.W / MIN)));
-      lane.setAttribute('aria-valuemax', String(DAY / MIN));
+      lane.setAttribute('aria-valuemax', String(SPAN / MIN));
       lane.setAttribute('aria-valuenow', String(Math.round((fr.b - pg.a) / MIN)));
       lane.setAttribute('aria-valuetext', span(fr.a, fr.b, true, en));
       h.querySelector('.hx-prev').disabled = false;
@@ -327,9 +355,9 @@
       var cur = h.querySelector('.hx-cursor');
       if (st.drag) {
         cur.hidden = true;
-        placeReadout(h, ((fr.a + fr.b) / 2 - pg.a) / DAY, [span(fr.a, fr.b, true, false), span(fr.a, fr.b, true, true)], true);
+        placeReadout(h, ((fr.a + fr.b) / 2 - pg.a) / SPAN, [span(fr.a, fr.b, true, false), span(fr.a, fr.b, true, true)], true);
       } else if (st.hover != null) {
-        var s = DAY / SLOTS, k = clamp(Math.floor(st.hover * SLOTS), 0, SLOTS - 1), t0 = pg.a + k * s, t1 = t0 + s;
+        var s = SPAN / SLOTS, k = clamp(Math.floor(st.hover * SLOTS), 0, SLOTS - 1), t0 = pg.a + k * s, t1 = t0 + s;
         var lost = st.marks.some(function (m) { return m[0] < t1 && m[1] > t0; });
         cur.hidden = false;
         cur.style.left = (st.hover * 100) + '%';
@@ -367,20 +395,28 @@
       setTimeout(settle, 4000);
     }
     function day(dir) {
-      var fr = frame(), pg = page(fr), now = nowMs(), pend = pg.b + dir * DAY, end = fr.b + dir * DAY;
+      var fr = frame(), pg = page(fr), now = nowMs(), pend = pg.b + dir * SPAN, end = fr.b + dir * SPAN;
       if (dir > 0 && pend >= now - 1000) {
         st.pageEnd = null;
         commit(end >= now - 1000 ? null : end, livePage());
         return;
       }
       st.pageEnd = pend;
-      commit(end, { a: pend - DAY, b: pend, live: false });
+      commit(end, { a: pend - SPAN, b: pend, live: false });
     }
     function toNow() { clearTimeout(st.keyT); st.pageEnd = null; commit(null, livePage()); }
+    // Another span (a day, a week, a month): the strip is built again around the same window.
+    function respan() {
+      var had = document.activeElement && document.activeElement.closest && document.activeElement.closest('.hx-span-btn');
+      st.pageEnd = null;
+      build();
+      render();
+      if (had) { var b = el.querySelector('.hx-span-btn[aria-pressed="true"]'); if (b) b.focus({ preventScroll: true }); }
+    }
     function bind() {
       var h = hx(), lane = h.querySelector('.hx-lane');
-      function at(e, pg) { var r = lane.getBoundingClientRect(); return pg.a + clamp((e.clientX - r.left) / Math.max(1, r.width), 0, 1) * DAY; }
-      function tol() { return 6 / Math.max(1, lane.getBoundingClientRect().width) * DAY; }
+      function at(e, pg) { var r = lane.getBoundingClientRect(); return pg.a + clamp((e.clientX - r.left) / Math.max(1, r.width), 0, 1) * SPAN; }
+      function tol() { return 6 / Math.max(1, lane.getBoundingClientRect().width) * SPAN; }
       function move(e) {
         var d = st.drag, end = clamp(at(e, d.pg) - d.grab + d.W, d.pg.a + d.W, d.pg.b);
         if (end > d.pg.b - tol()) end = d.pg.b;
@@ -396,7 +432,7 @@
       lane.addEventListener('pointerdown', function (e) {
         if (e.button !== 0) return;
         var fr = frame(), pg = page(fr);
-        if (fr.W >= DAY - 1000) return;
+        if (fr.W >= SPAN - 1000) return;
         var m = at(e, pg);
         clearTimeout(st.keyT);
         st.drag = { grab: m >= fr.a && m <= fr.b ? m - fr.a : fr.W / 2, pg: pg, W: fr.W, from: fr.b };
@@ -409,9 +445,9 @@
       lane.addEventListener('pointermove', function (e) {
         if (st.drag) { move(e); return; }
         var fr = frame(), pg = page(fr), m = at(e, pg), t = tol();
-        st.hover = (m - pg.a) / DAY;
+        st.hover = (m - pg.a) / SPAN;
         // Over the frame the cursor says «grab»: the frame is dragged; elsewhere a click moves the frame there.
-        lane.classList.toggle('on-frame', fr.W < DAY - 1000 && m >= fr.a - t && m <= fr.b + t);
+        lane.classList.toggle('on-frame', fr.W < SPAN - 1000 && m >= fr.a - t && m <= fr.b + t);
         render();
       });
       function stop(keep) {
@@ -451,6 +487,10 @@
       });
     }
 
+    el.addEventListener('click', function (e) {
+      var b = e.target.closest && e.target.closest('.hx-span-btn');
+      if (b && el._he === ctl) setSpan(Number(b.dataset.days));
+    });
     build();
     update();
     if (window.Live && window.Live.onData) window.Live.onData(function () { update(); });

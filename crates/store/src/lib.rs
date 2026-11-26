@@ -15,7 +15,7 @@ pub use rusqlite::Error;
 pub type Result<T> = rusqlite::Result<T>;
 
 /// Written to `PRAGMA user_version` once the database has every table below.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Seconds between rounds of a target nobody chose an interval for.
 pub const DEFAULT_INTERVAL_MS: i64 = 2500;
@@ -79,6 +79,13 @@ CREATE TABLE IF NOT EXISTS recent (
     host    TEXT PRIMARY KEY COLLATE NOCASE,
     used_ms INTEGER NOT NULL
 );
+";
+
+/// Version 2: an index of the rounds that did not reach the destination. The loss marks of a week
+/// or a month read only those: a month of a target in some 50 ms instead of 0.4 s. An older
+/// version of the app keeps the index up to date on its own.
+const MIGRATE_V2: &str = "
+CREATE INDEX IF NOT EXISTS rounds_lost ON rounds(target_id, ts_ms) WHERE reached = 0;
 ";
 
 #[derive(Debug, Clone, Serialize)]
@@ -555,6 +562,24 @@ impl Store {
         rows.collect()
     }
 
+    /// Minutes (ms / 60 000) of `[from_ms, to_ms)` in which a round did not reach the destination,
+    /// oldest first: the loss marks of the week and month strips. Rounds without a sent probe are
+    /// no loss.
+    pub fn lost_minutes(&self, target_id: i64, from_ms: i64, to_ms: i64) -> Result<Vec<i64>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT DISTINCT ts_ms / 60000 FROM rounds
+             WHERE target_id = ?1 AND ts_ms >= ?2 AND ts_ms < ?3 AND reached = 0
+               AND NOT (path_len = 1 AND EXISTS (SELECT 1 FROM hops
+                   WHERE round_id = rounds.id AND ttl = 1 AND kind = ?4))
+             ORDER BY 1",
+        )?;
+        let rows = st.query_map(
+            params![target_id, from_ms, to_ms, ReplyKind::Error.code()],
+            |r| r.get(0),
+        )?;
+        rows.collect()
+    }
+
     /// Deletes rounds that started before `before_ms`, with their hops: at most `batch` rounds of
     /// each target per call, so a long first clean-up does not hold the database. Returns how
     /// many rounds went; call again until it is 0. The file stops growing but keeps its size:
@@ -637,6 +662,9 @@ fn migrate(conn: &Connection) -> Result<()> {
         if version < 1 {
             conn.execute_batch(SCHEMA_V0)?;
             conn.execute_batch(MIGRATE_V1)?;
+        }
+        if version < 2 {
+            conn.execute_batch(MIGRATE_V2)?;
         }
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
     })();
