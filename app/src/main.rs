@@ -53,8 +53,9 @@ const PROBE_CAPS: [u32; 4] = [25, 50, 100, 200];
 /// Days of history on disk the settings offer; 0 keeps everything.
 const KEEP_DAYS: [u32; 5] = [7, 30, 90, 365, 0];
 /// The history is cleaned up this long after the start, then every `PRUNE_EVERY`, and within a
-/// minute after the days to keep change.
-const PRUNE_FIRST: Duration = Duration::from_secs(30);
+/// minute after the days to keep change. Five minutes leave time to choose "always" in the
+/// settings on the first start of a version that brings the clean-up.
+const PRUNE_FIRST: Duration = Duration::from_secs(300);
 const PRUNE_EVERY: Duration = Duration::from_secs(600);
 const PRUNE_LOOK: Duration = Duration::from_secs(60);
 /// Rounds of each target deleted at a time, so writes of new rounds are never held up for long.
