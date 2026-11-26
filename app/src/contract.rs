@@ -238,6 +238,22 @@ pub struct Settings {
     /// Days of history kept on disk: 7, 30, 90 or 365; 0 keeps everything.
     #[serde(default = "default_keep_days")]
     pub keep_days: u32,
+    /// Closing the window leaves the app in the notification area, probing; `false` quits.
+    #[serde(default = "yes")]
+    pub close_to_tray: bool,
+    /// The app starts in the notification area when the user signs in to the system.
+    #[serde(default)]
+    pub autostart: bool,
+    /// Notifications when a target stops answering or loses probes.
+    #[serde(default = "yes")]
+    pub alerts: bool,
+    /// Loss to a target that raises an alert, %: 5, 10 or 20.
+    #[serde(default = "default_alert_loss_pct")]
+    pub alert_loss_pct: u32,
+}
+
+fn default_alert_loss_pct() -> u32 {
+    10
 }
 
 fn default_probe_cap() -> u32 {
@@ -260,6 +276,10 @@ impl Default for Settings {
             home: None,
             probe_cap: default_probe_cap(),
             keep_days: default_keep_days(),
+            close_to_tray: true,
+            autostart: false,
+            alerts: true,
+            alert_loss_pct: default_alert_loss_pct(),
         }
     }
 }
@@ -286,6 +306,10 @@ pub struct SettingsPatch {
     pub home: Option<Option<HomeSetting>>,
     pub probe_cap: Option<u32>,
     pub keep_days: Option<u32>,
+    pub close_to_tray: Option<bool>,
+    pub autostart: Option<bool>,
+    pub alerts: Option<bool>,
+    pub alert_loss_pct: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -229,11 +229,47 @@
       [['ru', 'Русский'], ['en', 'English']].map(function (l) {
         return '<button type="button" data-lang-set="' + l[0] + '" aria-pressed="' + (lang === l[0]) + '">' + T(l[1], l[1]) + '</button>';
       }).join('') + '</div></div>';
+    h += backgroundBlock();
     h += loadBlock();
     h += historyBlock();
     h += geoBlock();
     return h + '</div>';
   }
+
+  // ---------- Working in the background: the window, the system start, alerts (settings.closeToTray, autostart, alerts, alertLossPct) ----------
+  var LOSS_STEPS = [5, 10, 20];
+  function onOff(attr, on, label, en) {
+    return '<div class="seg" role="group"' + A('aria-label', label, en) + '>' +
+      '<button type="button" ' + attr + '="on" aria-pressed="' + on + '">' + T('Вкл', 'On') + '</button>' +
+      '<button type="button" ' + attr + '="off" aria-pressed="' + !on + '">' + T('Выкл', 'Off') + '</button></div>';
+  }
+  function curLossStep() { var v = settings().alertLossPct; return LOSS_STEPS.indexOf(v) >= 0 ? v : 10; }
+  function backgroundBlock() {
+    var s = settings(), tray = s.closeToTray !== false, alerts = s.alerts !== false;
+    return '<div class="wth-set" data-bg-block><div class="wth-set-label">' + T('Фоновая работа', 'In the background') + '</div>' +
+      '<p class="wth-hint">' + T('При закрытии окна', 'When the window is closed') + '</p>' +
+      '<div class="seg" role="group"' + A('aria-label', 'При закрытии окна', 'When the window is closed') + '>' +
+      '<button type="button" data-tray-set="on" aria-pressed="' + tray + '">' + T('В трей', 'To the tray') + '</button>' +
+      '<button type="button" data-tray-set="off" aria-pressed="' + !tray + '">' + T('Выходить', 'Quit') + '</button></div>' +
+      '<p class="wth-hint">' + T('Запускать вместе с системой', 'Start with the system') + '</p>' +
+      onOff('data-autostart-set', !!s.autostart, 'Запускать вместе с системой', 'Start with the system') +
+      '<p class="wth-hint">' + T('Оповещать о сбое', 'Notify of trouble') + '</p>' +
+      onOff('data-alerts-set', alerts, 'Оповещать о сбое', 'Notify of trouble') +
+      '<p class="wth-hint">' + T('Потери до цели от', 'Loss to a target from') + '</p>' +
+      '<div class="seg" role="group"' + A('aria-label', 'Порог потерь для оповещения', 'Loss that raises an alert') + '>' +
+      LOSS_STEPS.map(function (v) { return '<button type="button" data-loss-alert="' + v + '" aria-pressed="' + (v === curLossStep()) + '">' + T(v + ' %', v + '%') + '</button>'; }).join('') + '</div>' +
+      '<p class="wth-hint">' + T('Оповещение приходит, когда цель не отвечает дольше минуты или потери до нее за 2 минуты выше порога. Роутеры по пути оповещений не вызывают.',
+        'An alert comes when a target does not answer for over a minute, or the loss to it over 2 minutes is above the threshold. Routers on the way raise none.') + '</p></div>';
+  }
+  function syncBackground() {
+    var s = settings();
+    markPressed('data-tray-set', s.closeToTray === false ? 'off' : 'on');
+    markPressed('data-autostart-set', s.autostart ? 'on' : 'off');
+    markPressed('data-alerts-set', s.alerts === false ? 'off' : 'on');
+    markPressed('data-loss-alert', String(curLossStep()));
+  }
+  // A change the core turns down (the system did not take the autostart entry) puts the marks back.
+  function saveOrRevert(patch) { saveSettings(patch).then(function (s) { if (!s) syncBackground(); }); }
 
   // ---------- Probes a second of all targets (settings.probeCap) and the history on disk (settings.keepDays) ----------
   var CAPS = [25, 50, 100, 200];
@@ -690,6 +726,7 @@
     }
     markPressed('data-theme-set', curTheme());
     markPressed('data-lang-set', curLang());
+    syncBackground();
     syncLoad(p);
     syncGeo(p);
   }
@@ -729,6 +766,23 @@
       markPressed('data-geo-check', on ? 'on' : 'off');
       if (on !== (settings().geoCheck !== false)) saveSettings({ geoCheck: on });
     } else if ((b = t.closest('[data-geo-remove]'))) { if (!b.disabled) removeGeo(b); }
+    else if ((b = t.closest('[data-tray-set]'))) {
+      var tray = b.dataset.traySet === 'on';
+      markPressed('data-tray-set', tray ? 'on' : 'off');
+      if (tray !== (settings().closeToTray !== false)) saveOrRevert({ closeToTray: tray });
+    } else if ((b = t.closest('[data-autostart-set]'))) {
+      var auto = b.dataset.autostartSet === 'on';
+      markPressed('data-autostart-set', auto ? 'on' : 'off');
+      if (auto !== !!settings().autostart) saveOrRevert({ autostart: auto });
+    } else if ((b = t.closest('[data-alerts-set]'))) {
+      var al = b.dataset.alertsSet === 'on';
+      markPressed('data-alerts-set', al ? 'on' : 'off');
+      if (al !== (settings().alerts !== false)) saveOrRevert({ alerts: al });
+    } else if ((b = t.closest('[data-loss-alert]'))) {
+      var lp = +b.dataset.lossAlert;
+      markPressed('data-loss-alert', String(lp));
+      if (lp !== settings().alertLossPct) saveOrRevert({ alertLossPct: lp });
+    }
     else if ((b = t.closest('[data-cap-set]'))) {
       var cap = +b.dataset.capSet;
       markPressed('data-cap-set', String(cap));

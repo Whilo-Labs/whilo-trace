@@ -56,11 +56,12 @@ enum Scenario {
     Far,
     Jitter,
     Offline,
+    Outage,
 }
 
 /// In address order: the index is what a made-up address carries. New ones go at the end, so
 /// the addresses of the others stay.
-const SCENARIOS: [Scenario; 10] = [
+const SCENARIOS: [Scenario; 11] = [
     Scenario::Mixed,
     Scenario::Loss,
     Scenario::Flaky,
@@ -71,10 +72,11 @@ const SCENARIOS: [Scenario; 10] = [
     Scenario::Far,
     Scenario::Jitter,
     Scenario::Offline,
+    Scenario::Outage,
 ];
 
 /// Words of a host name and what they pick; the first one that matches wins.
-const WORDS: [(&str, Scenario); 9] = [
+const WORDS: [(&str, Scenario); 10] = [
     ("down", Scenario::Down),
     ("unreachable", Scenario::Unreachable),
     ("loss", Scenario::Loss),
@@ -84,6 +86,7 @@ const WORDS: [(&str, Scenario); 9] = [
     ("far", Scenario::Far),
     ("jitter", Scenario::Jitter),
     ("offline", Scenario::Offline),
+    ("outage", Scenario::Outage),
 ];
 
 fn scenario_of_name(name: &str) -> Scenario {
@@ -267,6 +270,16 @@ impl Path {
                 p.spike_from = 3 + pick(24, p.len - 3);
             }
             Scenario::Offline => p.offline = Some((120, 40, (h >> 40) as i64 % 120)),
+            // The destination answers, then nothing gets past hop 3 for 70 s of every 180 s.
+            Scenario::Outage => {
+                p.episodes = Some(Episodes {
+                    every_s: 180,
+                    last_s: 70,
+                    offset_s: (h >> 40) as i64 % 180,
+                    from: 3,
+                    share: 1.0,
+                })
+            }
         }
         p
     }

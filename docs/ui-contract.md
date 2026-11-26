@@ -47,7 +47,8 @@ system's own message, in the system's language.
 | `pin_hop` | `{ targetId, ttl }` | `{ id }`; `targetId` is the target's row id; the same hop pinned again keeps its id |
 | `unpin_hop` | `{ id }` | `null` |
 | `get_settings` | `{}` | `Settings` |
-| `set_settings` | `{ settings: Partial<Settings> }` | `Settings`; values that do not fit are ignored |
+| `set_settings` | `{ settings: Partial<Settings> }` | `Settings`; values that do not fit are ignored; `autostart` changes the system's own entry first and fails with `autostart_failed: <detail>` when the system refuses |
+| `show_window` | `{}` | `null`; brings the main window up from the notification area |
 | `clear_history` | `{}` | `null`; deletes every round of every target from disk and memory (targets, pinned hops and settings stay), then shrinks the file |
 | `recent_inputs` | `{}` | `string[]`, last hosts typed, newest first, at most 10 |
 | `export_report` | `{ req: ReportReq }` | `{ dir, files }` |
@@ -271,7 +272,12 @@ resumes it, then at its saved interval.
 ## Settings
 
 `{ warnMs: 100, badMs: 200, theme: "system" | "light" | "dark", lang: "ru" | "en", window: "10m",
-geoCheck: true, home: null | { lat, lon }, probeCap: 50, keepDays: 30 }`.
+geoCheck: true, home: null | { lat, lon }, probeCap: 50, keepDays: 30, closeToTray: true, autostart: false,
+alerts: true, alertLossPct: 10 }`.
+`closeToTray`: closing the window leaves the app in the notification area, probing; `false` quits.
+`autostart`: the app starts in the notification area when the user signs in; it reflects the system's own
+entry and is not saved in the history file. `alerts`: notifications when a target stops answering for a
+minute or the loss to it over 2 minutes reaches `alertLossPct` (5, 10 or 20).
 Thresholds paint the latency background; language and theme apply to the whole window. `window` is the
 window both screens open with: the main screen and the trace screen save it with `set_settings`.
 `probeCap`: probes a second for all targets together: 25, 50, 100 or 200. `keepDays`: days of history kept on disk: 7, 30, 90 or 365, `0` keeps everything; older rounds are deleted in the background. `geoCheck`: look for a newer places database when the map opens (`geo_check`). `home`: a home put on the

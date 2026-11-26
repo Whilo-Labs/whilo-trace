@@ -3,21 +3,26 @@
 //! Whilo Trace desktop app: several targets at once, a timeline per target and per pinned hop,
 //! the full trace of one target. Commands and their JSON: `docs/ui-contract.md`.
 
+mod alerts;
 mod contract;
 mod geo;
+mod tray;
 
 use contract::{
     AddTargetReq, ExportRes, History, HopRef, IdRes, PartialHop, PathSummary, ReportReq, Row,
     Settings, SettingsPatch, Snapshot, SnapshotReq, Stats, Trace, TraceHop,
 };
 use geo::GeoState;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_notification::NotificationExt;
 use whilo_trace_engine::dns::DnsCache;
 use whilo_trace_engine::monitor::resolve_v4;
 use whilo_trace_engine::sim::SimNet;
@@ -197,6 +202,8 @@ struct Core {
     geo: Arc<GeoState>,
     /// Probes per second of all monitors together (`settings.probe_cap`).
     budget: Arc<ProbeBudget>,
+    /// The window went to the notification area once already, and the user was told.
+    tray_hint: AtomicBool,
 }
 
 /// A poisoned lock still holds usable data: a panic in one command must not stop the others.
@@ -323,7 +330,9 @@ impl Core {
         let store = Store::open(&db_path).map_err(db)?;
         let reader = Store::open(&db_path).map_err(db)?;
         let pins = store.pins().map_err(db)?;
-        let settings = load_settings(&store.settings().map_err(db)?);
+        let saved = store.settings().map_err(db)?;
+        let settings = load_settings(&saved);
+        let tray_hint = saved.iter().any(|(key, _)| key == "trayHint");
         let recent = store.recent().map_err(db)?;
         let geo = Arc::new(GeoState::new(&db_path, net.simulated));
         let budget = ProbeBudget::new(settings.probe_cap);
@@ -351,6 +360,7 @@ impl Core {
             recent: Mutex::new(recent),
             geo,
             budget,
+            tray_hint: AtomicBool::new(tray_hint),
         }))
     }
 
@@ -1340,6 +1350,22 @@ fn apply_settings(s: &mut Settings, p: &SettingsPatch) -> Vec<(&'static str, Str
         s.keep_days = v;
         changed.push(("keepDays", v.to_string()));
     }
+    if let Some(v) = p.close_to_tray {
+        s.close_to_tray = v;
+        changed.push(("closeToTray", v.to_string()));
+    }
+    // Not saved: the system's own entry says whether the app starts with it.
+    if let Some(v) = p.autostart {
+        s.autostart = v;
+    }
+    if let Some(v) = p.alerts {
+        s.alerts = v;
+        changed.push(("alerts", v.to_string()));
+    }
+    if let Some(v) = p.alert_loss_pct.filter(|v| alerts::THRESHOLDS.contains(v)) {
+        s.alert_loss_pct = v;
+        changed.push(("alertLossPct", v.to_string()));
+    }
     geo::apply_settings(s, p, &mut changed);
     changed
 }
@@ -1357,6 +1383,9 @@ fn load_settings(saved: &[(String, String)]) -> Settings {
             "window" => p.window = v.as_str().map(String::from),
             "probeCap" => p.probe_cap = v.as_u64().and_then(|x| u32::try_from(x).ok()),
             "keepDays" => p.keep_days = v.as_u64().and_then(|x| u32::try_from(x).ok()),
+            "closeToTray" => p.close_to_tray = v.as_bool(),
+            "alerts" => p.alerts = v.as_bool(),
+            "alertLossPct" => p.alert_loss_pct = v.as_u64().and_then(|x| u32::try_from(x).ok()),
             _ => geo::load_setting(&mut p, key, &v),
         }
     }
@@ -1366,8 +1395,25 @@ fn load_settings(saved: &[(String, String)]) -> Settings {
 }
 
 #[tauri::command]
-fn set_settings(core: State<'_, Arc<Core>>, settings: SettingsPatch) -> Result<Settings, String> {
+fn set_settings(
+    app: AppHandle,
+    core: State<'_, Arc<Core>>,
+    settings: SettingsPatch,
+) -> Result<Settings, String> {
+    // Starting with the system is an entry of the system (the registry on Windows): change it
+    // first, and keep the setting as the system has it.
+    if let Some(on) = settings.autostart {
+        let a = app.autolaunch();
+        let done = if on { a.enable() } else { a.disable() };
+        done.map_err(|e| format!("autostart_failed: {e}"))?;
+    }
     core.change_settings(&settings)
+}
+
+/// Brings the window up, for the interface of another window or a test.
+#[tauri::command]
+fn show_window(app: AppHandle) {
+    tray::show_main(&app);
 }
 
 #[tauri::command]
@@ -1778,8 +1824,125 @@ fn set_background(window: tauri::WebviewWindow, dark: bool) -> Result<(), String
         .map_err(|e| format!("io: {e}"))
 }
 
+/// How often the alerts look at the rounds.
+const ALERT_EVERY: Duration = Duration::from_secs(5);
+
+/// The alert of one target: on or not, and where its loss starts counting (the start of the app
+/// or the end of its last outage).
+struct Track {
+    active: Option<alerts::Active>,
+    loss_from: i64,
+}
+
+impl Core {
+    /// Looks at every running target once: raises and clears alerts in `states`, and tells `send`
+    /// (title, text) what changed. Returns the targets with an alert, and the running targets.
+    fn alert_pass(
+        &self,
+        states: &mut HashMap<i64, Track>,
+        started_ms: i64,
+        send: &dyn Fn(&str, &str),
+    ) -> (usize, usize) {
+        let s = lock(&self.settings).clone();
+        let running: Vec<(i64, String, Arc<Mutex<TargetData>>)> = lock(&self.targets)
+            .iter()
+            .filter(|(_, t)| !t.paused)
+            .map(|(&id, t)| (id, t.host.clone(), t.data.clone()))
+            .collect();
+        states.retain(|id, _| s.alerts && running.iter().any(|r| r.0 == *id));
+        if !s.alerts {
+            return (0, running.len());
+        }
+        let threshold = f64::from(s.alert_loss_pct);
+        let now = now_ms();
+        for (id, host, data) in &running {
+            let (rounds, answered) = {
+                let mut d = lock(data);
+                let answered = d
+                    .hist
+                    .rounds_between(now - KEEP_MS, now + 1)
+                    .iter()
+                    .rev()
+                    .any(|r| r.reached);
+                let recent = d
+                    .hist
+                    .rounds_between(now - alerts::LOOK_BACK_MS, now + 1)
+                    .to_vec();
+                (recent, answered)
+            };
+            // Loss from before the app started was never watched: it counts from the start.
+            let track = states.entry(*id).or_insert_with(|| Track {
+                active: None,
+                loss_from: started_ms,
+            });
+            let cond = alerts::assess(&rounds, now, threshold, answered, track.loss_from);
+            let (next, change) = alerts::step(track.active, &cond, threshold);
+            track.active = next;
+            if change == Some(alerts::Change::Answers) {
+                // After an outage the loss is judged over the rounds since its end.
+                track.loss_from = now;
+            }
+            if let Some(c) = change {
+                let (title, body) = alerts::text(host, c, &cond, &s.lang);
+                send(&title, &body);
+            }
+        }
+        let alerting = states.values().filter(|t| t.active.is_some()).count();
+        (alerting, running.len())
+    }
+
+    /// Whether the window has gone to the notification area before; marks it as gone.
+    fn first_hide(&self) -> bool {
+        if self.tray_hint.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        let _ = lock(&self.store).set_setting("trayHint", "true");
+        true
+    }
+}
+
+/// Watches the targets for alerts for as long as the app runs: notifications and the tray icon.
+fn watch_alerts(app: AppHandle, core: Arc<Core>, simulated: bool) {
+    let _ = std::thread::Builder::new()
+        .name("alerts".into())
+        .spawn(move || {
+            let mut states: HashMap<i64, Track> = HashMap::new();
+            let started_ms = now_ms();
+            let mut shown: Option<(usize, usize, String)> = None;
+            loop {
+                std::thread::sleep(ALERT_EVERY);
+                let lang = lock(&core.settings).lang.clone();
+                let send = |title: &str, body: &str| {
+                    // Made-up data must not pass for real.
+                    let title = if simulated {
+                        format!(
+                            "{title} ({})",
+                            if lang == "en" {
+                                "simulated"
+                            } else {
+                                "имитация"
+                            }
+                        )
+                    } else {
+                        title.to_string()
+                    };
+                    eprintln!("alert: {title}: {body}");
+                    let _ = app.notification().builder().title(title).body(body).show();
+                };
+                let (alerting, targets) = core.alert_pass(&mut states, started_ms, &send);
+                let now = (alerting, targets, lang.clone());
+                if shown.as_ref() != Some(&now) {
+                    tray::set_alerts(&app, alerting, targets, &lang);
+                    shown = Some(now);
+                }
+            }
+        });
+}
+
 fn main() {
     let simulate = simulate_value(std::env::var_os("WHILO_TRACE_SIMULATE").as_deref());
+    // Started by the system at sign-in (autostart): straight to the notification area.
+    let minimized = std::env::args().any(|a| a == "--minimized");
     let mut builder = tauri::Builder::default();
     // A second copy would probe every target twice, and a pause in one window would not stop the
     // other: it brings up the first window instead. The simulated network sends nothing and has
@@ -1795,6 +1958,49 @@ fn main() {
     }
     builder
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--minimized"]),
+        ))
+        .on_window_event(|window, event| {
+            // Closing the window leaves the app in the notification area, probing.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() != "main" {
+                    return;
+                }
+                let core = window.state::<Arc<Core>>();
+                let (to_tray, lang) = {
+                    let s = lock(&core.settings);
+                    (s.close_to_tray, s.lang.clone())
+                };
+                if !to_tray {
+                    return;
+                }
+                api.prevent_close();
+                let _ = window.hide();
+                if core.first_hide() {
+                    let (title, body) = if lang == "en" {
+                        (
+                            "Whilo Trace keeps running",
+                            "The targets are still probed. Open the window or quit from the icon in the notification area.",
+                        )
+                    } else {
+                        (
+                            "Whilo Trace работает дальше",
+                            "Цели опрашиваются. Открыть окно или выйти можно через значок в области уведомлений.",
+                        )
+                    };
+                    let _ = window
+                        .app_handle()
+                        .notification()
+                        .builder()
+                        .title(title)
+                        .body(body)
+                        .show();
+                }
+            }
+        })
         .setup(move |app| {
             let handle = app.handle().clone();
             let notify: Notify = Arc::new(move |id| {
@@ -1809,7 +2015,21 @@ fn main() {
             geo::wire_app(app, &core.geo);
             core.start_saved()?;
             Core::keep_history_trimmed(core.clone());
+            // Whether the app starts with the system is the system's own entry: take it from there.
+            let autostart = app.autolaunch().is_enabled().unwrap_or(false);
+            let lang = {
+                let mut s = lock(&core.settings);
+                s.autostart = autostart;
+                s.lang.clone()
+            };
+            tray::build(app, &lang)?;
+            watch_alerts(app.handle().clone(), core.clone(), simulate);
             if let Some(window) = app.get_webview_window("main") {
+                // The window starts hidden (tauri.conf.json): shown here unless the system
+                // started the app at sign-in.
+                if !minimized {
+                    let _ = window.show();
+                }
                 let (theme, lang) = {
                     let s = lock(&core.settings);
                     (s.theme.clone(), s.lang.clone())
@@ -1849,6 +2069,7 @@ fn main() {
             open_folder,
             set_background,
             clear_history,
+            show_window,
             geo::geo_check,
             geo::geo_download,
             geo::geo_cancel,

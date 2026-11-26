@@ -33,6 +33,7 @@
 | **Route map** | The path on a world map, with router places from the DB-IP Lite database that comes with the app: no online maps, and lookups stay on your computer. A speed-of-light check marks the places that the measured round trip rules out. Zoom and pan; a route with a long jump, as across an ocean, opens on its main part with a pointer to the rest. A packet runs along the route with the target's latest round; full screen; a picture for publishing that hides your addresses and your provider's first hops. |
 | **History** | Everything is kept locally in SQLite. A day strip with loss marks opens any moment of the past, also older than 24 hours. |
 | **Report for your ISP** | Any period as HTML, PNG, CSV and JSON, with the time zone and the findings, in the interface language. |
+| **In the background** | Closing the window leaves the app in the notification area, still probing; it can start with the system. A notification comes when a target stops answering for a minute or the loss to it reaches 10% (5 to 20% in the settings), naming the hop where the loss starts, and again when it is over. |
 | **Interface** | English and Russian; light, dark or system theme; reorder targets by drag and drop, and the order is kept. |
 
 ## Screenshots
@@ -213,6 +214,14 @@ The router limits how often it answers. If the hops after it answer every probe,
 <br>
 
 One small probe per hop per round: a target 10 hops away at the default 2.5 s sends 4 packets per second. A target that does not answer is probed a little past the last router that answered, and the full 30 hops once a minute. All targets together never send more than 50 packets per second (25 to 200 in the settings): rounds over that are skipped and show as gaps, not loss, so the app cannot flood a home router and then report the loss it caused. The status bar shows what was actually sent.
+</details>
+
+<details>
+<summary><b>Does it keep running when I close the window?</b></summary>
+
+<br>
+
+Yes: the window goes to the notification area and the targets are still probed, so the history has no holes. Click the icon to open the window; its menu has Quit. The settings can make closing quit instead, and can start the app with the system.
 </details>
 
 <details>
