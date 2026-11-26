@@ -25,6 +25,7 @@ The app now keeps watching with its window closed, tells you when something brea
 - The portable zip keeps the history, settings and the window's browser data in a `data` folder next to the program.
 - `error.log` next to the history records what went wrong. Attaching it to an issue helps.
 - Each release has `SHA256SUMS.txt` with the checksums of its files.
+- The command line tool for Windows (in the portable zip) no longer needs the Visual C++ Redistributable.
 - The status bar asks once whether to tell you about new versions. With yes, the app asks GitHub once a day and shows "Version X is out" with a link. Nothing is downloaded by itself.
 
 The first start of 0.4.0 adds an index to the history file, so a large history may take a few seconds longer to open once.
