@@ -72,7 +72,7 @@
 .mk-loss { background: var(--loss); }
 .mk-partial { background: var(--partial); }
 .mk-noreply, .mk-unreachable, .mk-route { background: var(--muted); }
-.tr-cmp { font-size: 13px; }
+.tr-cmp { font-size: 13px; padding: 12px 16px 13px; }
 .tr-cmp p { margin: 0; }
 .tr-cmp ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
 .tr-cmp li { display: flex; align-items: center; gap: 8px; }
@@ -111,7 +111,10 @@ svg.mk { overflow: hidden; }
 }
 .tr-row > div { min-width: 0; white-space: nowrap; }
 .tr-row > .c-addr, .tr-row > .c-name { overflow: hidden; text-overflow: ellipsis; }
-.tr-row > .c-name .geo { color: var(--muted); }
+/* The name, and under it where the hop is and whose network (grey, smaller). */
+.tr-row > .c-name.has-geo { display: flex; flex-direction: column; justify-content: center; }
+.tr-row > .c-name > span { overflow: hidden; text-overflow: ellipsis; }
+.tr-row > .c-name .geo { color: var(--muted); font-size: 11px; line-height: 1.35; }
 .tr-row:hover, .tr-row.is-hover { background: var(--control); }
 .tr-row[aria-selected="true"] { background: var(--selected); }
 .tr-row:focus-visible, .tr-row.is-focus { outline: 2px solid var(--focus-ring); outline-offset: -2px; }

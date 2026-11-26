@@ -177,8 +177,7 @@ pub struct Trace {
     pub hops: Vec<TraceHop>,
     /// Where the path starts on the map; null without one.
     pub home: Option<TraceHome>,
-    /// Changes of the route over the window, oldest first; empty for a past window that is no
-    /// longer in memory.
+    /// Changes of the route over the window, oldest first.
     pub changes: Vec<RouteChangeOut>,
 }
 

@@ -638,8 +638,8 @@
     // The name, then where the hop is and whose network (the places of the route map), in grey.
     var nm = nameP(h.name), gl = geoLine(h.geo);
     var tip = [nm ? L(nm.ru, nm.en) : '', gl ? L(gl.ru, gl.en) : ''].filter(Boolean).join(' · ');
-    c += '<div class="c-name"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + (nm ? P(nm) : '') +
-      (gl ? '<span class="geo">' + (nm ? ' · ' : '') + S(gl.ru, gl.en) + '</span>' : '') + '</div>';
+    c += '<div class="c-name' + (gl ? ' has-geo' : '') + '"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>' + (nm ? P(nm, 'nm') : '') +
+      (gl ? S(gl.ru, gl.en, 'geo') : '') + '</div>';
     if (s) {
       // One rule with the summary: real loss in «Потери»; a node that answers only some probes gets the no-reply share in grey.
       var nr = h.status === 'partial' && s.noReplyPct > 0 ? pr(s.noReplyPct) : null;
@@ -900,8 +900,22 @@
     }
     var lp = pair(r.before.lossPct, r.after.lossPct, '%'), ap = pair(r.before.avgMs, r.after.avgMs, 'ms');
     h += '<p>' + S('До цели: потери ' + lp.ru + ', средняя задержка ' + ap.ru + '.', 'To the destination: loss ' + lp.en + ', average round trip ' + ap.en + '.') + '</p>';
-    var items = r.hops.filter(function (x) { return x.verdict !== 'same'; }).map(function (x) {
-      var who = function (a) { return a ? ' (' + a + ')' : ''; }, t;
+    // Hops in a row that got worse (or better) by the same loss make one line: loss that starts at a hop
+    // carries on to the destination, and six lines would say one thing.
+    var changed = r.hops.filter(function (x) { return x.verdict !== 'same'; }), runs = [];
+    changed.forEach(function (x) {
+      var last = runs[runs.length - 1], prev = last && last[last.length - 1], lp = pair(x.lossA, x.lossB, '%');
+      var same = prev && !x.dest && !prev.dest && (x.verdict === 'worse' || x.verdict === 'better') && x.verdict === prev.verdict &&
+        x.ttl === prev.ttl + 1 && lp.ru === pair(prev.lossA, prev.lossB, '%').ru && num(x.lossA, '%').ru !== num(x.lossB, '%').ru;
+      if (same) last.push(x); else runs.push([x]);
+    });
+    var items = runs.map(function (run) {
+      if (run.length > 1) {
+        var a = run[0], z = run[run.length - 1], l = pair(a.lossA, a.lossB, '%'), w = a.verdict === 'worse';
+        return '<li>' + mk(w ? 'loss' : 'ok') + S('хопы с ' + a.ttl + ' по ' + z.ttl + ': ' + (w ? 'хуже' : 'лучше') + ', потери ' + l.ru,
+          'hops ' + a.ttl + ' to ' + z.ttl + ': ' + (w ? 'worse' : 'better') + ', loss ' + l.en) + '</li>';
+      }
+      var x = run[0], who = function (a) { return a ? ' (' + a + ')' : ''; }, t;
       if (x.verdict === 'rerouted') t = { ru: 'хоп ' + x.ttl + ': другой роутер, ' + x.addrA + ' → ' + x.addrB, en: 'hop ' + x.ttl + ': another router, ' + x.addrA + ' → ' + x.addrB };
       else if (x.verdict === 'new') t = { ru: 'хоп ' + x.ttl + ': новый роутер' + who(x.addrB), en: 'hop ' + x.ttl + ': a new router' + who(x.addrB) };
       else if (x.verdict === 'gone') t = { ru: 'хоп ' + x.ttl + ': роутера больше нет' + who(x.addrA), en: 'hop ' + x.ttl + ': the router is gone' + who(x.addrA) };

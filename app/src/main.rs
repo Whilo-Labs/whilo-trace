@@ -74,6 +74,9 @@ const PRUNE_BATCH: usize = 500;
 struct TargetData {
     hist: buckets::History,
     error: Option<String>,
+    /// Changes of the route over the last past window older than memory (`[from, to)`): the
+    /// window's buckets are kept, its rounds are not.
+    past_changes: Option<((i64, i64), Vec<RouteChange>)>,
 }
 
 struct Target {
@@ -404,6 +407,7 @@ impl Core {
         let data = Arc::new(Mutex::new(TargetData {
             hist: buckets::History::new(KEEP_MS, started),
             error: None,
+            past_changes: None,
         }));
         let interval_s = snap_interval(row.interval_ms as f64 / 1000.0);
         let monitor = self.spawn(row.id, &row.host, interval_s, row.paused, &data)?;
@@ -988,17 +992,37 @@ impl Core {
                 d.hist.keep_past(f.b, f.from_k, f.n, grid);
                 c
             };
-            // Changes of the route over the window, for the trace: from memory, or from the rounds
-            // just read from disk; none for a past window kept as buckets only.
+            // Changes of the route over the window, for the trace: from memory, from the rounds
+            // just read from disk, or for a past window kept as buckets from what was found when it
+            // was read (or from its rounds read again).
             let mut c = c;
             if let Some(tr) = c.trace.as_mut() {
-                let found = match disk_changes.take() {
-                    Some(found) => found,
-                    None if live || f.from_ms >= d.hist.complete_from() => {
-                        route_changes(d.hist.rounds_between(f.from_ms, f.to_ms))
+                let found = if let Some(found) = disk_changes.take() {
+                    found
+                } else if in_memory {
+                    route_changes(d.hist.rounds_between(f.from_ms, f.to_ms))
+                } else {
+                    let key = (f.from_ms, f.to_ms);
+                    let cached = d
+                        .past_changes
+                        .as_ref()
+                        .filter(|(k, _)| *k == key)
+                        .map(|(_, v)| v.clone());
+                    match cached {
+                        Some(v) => v,
+                        None => {
+                            drop(d);
+                            let rounds = lock(&self.reader)
+                                .load_rounds(t.id, f.from_ms, f.to_ms)
+                                .map_err(db)?;
+                            d = lock(&t.data);
+                            route_changes(&rounds)
+                        }
                     }
-                    None => Vec::new(),
                 };
+                if !in_memory {
+                    d.past_changes = Some(((f.from_ms, f.to_ms), found.clone()));
+                }
                 tr.changes = found.iter().map(change_out).collect();
             }
             // Loss marks of the history strip.
@@ -2613,6 +2637,48 @@ mod tests {
         assert_eq!(hops.len(), 5);
         assert!(hops[4].dest && !hops[2].dest, "{hops:?}");
         shut_down(core);
+    }
+
+    /// The route changes of a past window older than memory: found when it is read from disk, and
+    /// still there when the window's buckets are used again.
+    #[test]
+    fn a_past_window_keeps_its_route_changes() {
+        let dir = temp_dir("past-changes");
+        let db_path = dir.0.join("history.db");
+        let now = now_ms();
+        let ip = Ipv4Addr::new(10, 0, 0, 5);
+        {
+            let mut s = Store::open(&db_path).unwrap();
+            let a = s.add_target("10.0.0.5").unwrap();
+            s.set_paused(a, true).unwrap();
+            // Two days ago, an hour of rounds a minute apart; from the 30th on another router
+            // answers at hop 2.
+            for k in 0..60 {
+                let mut r = round(now - 2 * DAY_MS + k * 60_000, &[true; 4], ip);
+                if k >= 30 {
+                    r.hops[1].addr = Some(IpAddr::V4(Ipv4Addr::new(10, 9, 2, 1)));
+                }
+                s.insert_round(a, &r).unwrap();
+            }
+        }
+        let probes = Arc::new(AtomicUsize::new(0));
+        let core = Core::open_with(
+            db_path.clone(),
+            Arc::new(|_| {}),
+            Some(fake_backend(&probes)),
+        )
+        .unwrap();
+        core.start_saved().unwrap();
+        let mut r = req("1h", Some(now - 2 * DAY_MS + 3_600_000));
+        r.trace = Some("t1".into());
+        let kinds = |s: &Snapshot| -> Vec<(String, Option<u8>)> {
+            let t = s.trace.as_ref().unwrap();
+            t.changes.iter().map(|c| (c.kind.clone(), c.ttl)).collect()
+        };
+        let first = core.snapshot(&r).unwrap();
+        assert_eq!(kinds(&first), vec![("router".to_string(), Some(2))]);
+        let again = core.snapshot(&r).unwrap();
+        assert_eq!(kinds(&again), kinds(&first));
     }
 
     /// Saved history in, snapshots and a report out: the commands without the window.

@@ -217,17 +217,25 @@ pub fn text(host: &str, change: Change, cond: &Condition, lang: &str) -> (String
                     " Where it starts cannot be told from the hops.".into(),
                 ),
             };
-            let m = mins(*span_ms);
+            // Right after a start or an outage the loss counts over a single minute.
+            let (span_ru, span_en) = match mins(*span_ms) {
+                1 => (
+                    "за последнюю минуту.".to_string(),
+                    "over the last minute.".to_string(),
+                ),
+                m => (
+                    format!("за последние {m} мин."),
+                    format!("over the last {m} min."),
+                ),
+            };
             (
                 pair(
                     format!("{host}: потери {pct:.0} %"),
                     format!("{host}: loss {pct:.0}%"),
                 ),
                 pair(
-                    format!("Потери до цели {pct:.0} % за последние {m} мин.{where_}"),
-                    format!(
-                        "{pct:.0}% of the probes to it were lost over the last {m} min.{where_}"
-                    ),
+                    format!("Потери до цели {pct:.0} % {span_ru}{where_}"),
+                    format!("{pct:.0}% of the probes to it were lost {span_en}{where_}"),
                 ),
             )
         }
@@ -487,6 +495,22 @@ mod tests {
         assert_eq!(
             b,
             "18% of the probes to it were lost over the last 2 min. The loss starts at hop 7 (10.0.0.7)."
+        );
+        // Right after a start: one minute, said as words.
+        let short = Condition::Loss {
+            pct: 48.0,
+            span_ms: 70_000,
+            origin: None,
+        };
+        let (_, b) = text("example.com", Change::Lossy, &short, "ru");
+        assert!(
+            b.starts_with("Потери до цели 48 % за последнюю минуту. "),
+            "{b}"
+        );
+        let (_, b) = text("example.com", Change::Lossy, &short, "en");
+        assert!(
+            b.starts_with("48% of the probes to it were lost over the last minute. "),
+            "{b}"
         );
     }
 }
