@@ -170,6 +170,8 @@ A word in the host name picks what its path does:
 | `limit` | a router answers only part of the probes sent to it |
 | `far` | a long path, high latency |
 | `jitter` | latency spikes from a hop on |
+| `offline` | the computer has no network 40 seconds in every 2 minutes: no probe goes out |
+| `outage` | the destination answers, then nothing gets past hop 3 for 70 seconds in every 3 minutes |
 
 A word counts when it is a whole part of the name between dots or hyphens: `loss.example`, `down.example`, `my-flaky-host.test`, but not `lossless.example`. Any other name or address gets a mix of its own, the same on every run. Addresses of the home network are one hop away, addresses in 192.0.2.0/24 behave as `down`, and names ending in `.invalid` do not resolve.
 
